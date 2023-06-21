@@ -64,8 +64,8 @@ cell_specimen_table = dataset.cell_specimen_table
 cell_specimen_ids = cell_specimen_table.index.values
 
 initial_time = 820
-final_time = 860
-idx_cell = np.arange(0,5)
+final_time = 840
+idx_cell = np.array([0,1])  # np.array([0])
 cell_specimen_id = cell_specimen_ids[idx_cell]
 
 dataDict = dataExtractor.get_dataDict(dataset,cell_specimen_id,initial_time,final_time)
@@ -84,10 +84,14 @@ fig,axs = plt.subplots(2,1,figsize=(15,7))
 axs = np.ravel(axs)
 
 axs[0].plot(dff.timestamps,dff.data,label='dF/F')
-axs[0].plot(events.timestamps,events.data,label='events')
 for _,stimulus in stim_pres.iterrows():
     axs[0].axvspan(stimulus['start_time'],stimulus['end_time'],color=stimulus['color'],alpha=.25)
 axs[0].legend()
+
+# axs[1].plot(events.timestamps,events.data,label='events')
+# for _,stimulus in stim_pres.iterrows():
+#     axs[1].axvspan(stimulus['start_time'],stimulus['end_time'],color=stimulus['color'],alpha=.25)
+# axs[1].legend()
 
 axs[1].plot(speed.timestamps,speed.data,label='speed')
 axs[1].plot(pupil.timestamps,pupil.data,label='pupil')

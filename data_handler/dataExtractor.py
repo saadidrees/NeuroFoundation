@@ -20,6 +20,9 @@ import numpy as np
 import pandas as pd
 global dataset
 import seaborn as sns
+from collections import namedtuple
+df_tuple = namedtuple('df_tuple', ['timestamps', 'data'])
+
 
 
 
@@ -31,7 +34,7 @@ def get_dff(cell_specimen_id,initial_time,final_time):
     df = pd.DataFrame(df)
     df = df.query('timestamps >= @initial_time and timestamps < @final_time')
     
-    return df,dff,timestamps
+    return df,df.data,df.timestamps
 
 
 def get_events(cell_specimen_id,initial_time,final_time):
@@ -42,12 +45,14 @@ def get_events(cell_specimen_id,initial_time,final_time):
     df = pd.DataFrame(df)
     df = df.query('timestamps >= @initial_time and timestamps < @final_time')
     
-    return df
+    return df,df.data,df.timestamps
+
 
 def get_stim_pres(stimulus_presentations,initial_time,final_time):
     stim_pres_chunk = stimulus_presentations.query('end_time >= @initial_time and start_time <= @final_time')
     return stim_pres_chunk
     
+
 def get_stim_frame(dataset,stimulus_presentations,stim_pres_time,timeunit='s'):
     if timeunit=='s':   # seconds
         stim_frame = stimulus_presentations.query('end_time >= @stim_pres_time')
@@ -103,12 +108,22 @@ def get_dataDict(dataset,cell_specimen_id,initial_time,final_time):
     stimulus_presentations = dataset.stimulus_presentations
     stimulus_presentations['color'] = dataset.stimulus_presentations['image_name'].map(lambda image_name: colormap[image_name])
     
-    arr = np.empty((0,len(cell_specimen_id))
+    cell_id = cell_specimen_id[0]
+    df,dff_rgb,dff_timestamps = get_dff(cell_id,initial_time,final_time)
+    df_events,events_rgb,events_timestamps = get_events(cell_id,initial_time,final_time)
+    
+    dff_data = dff_rgb[:,None]
+    events_data = events_rgb[:,None]
     for cell_id in cell_specimen_id:
-        df,dff_rgb,timestamps = get_dff(cell_specimen_id,initial_time,final_time)
+        _,dff_rgb,_ = get_dff(cell_id,initial_time,final_time)
+        dff_data = np.hstack((dff_data,dff_rgb[:,None]))
+        
+        _,events_rgb,_ = get_events(cell_id,initial_time,final_time)
+        events_data = np.hstack((events_data,events_rgb[:,None]))
+        
+    dff = df_tuple(dff_timestamps,dff_data)
+    events = df_tuple(events_timestamps,events_data)
     
-    
-    events = get_events(cell_specimen_id,initial_time,final_time)
     stim_pres = get_stim_pres(stimulus_presentations,initial_time,final_time)
     
     
