@@ -22,6 +22,8 @@ global dataset
 import seaborn as sns
 from collections import namedtuple
 df_tuple = namedtuple('df_tuple', ['timestamps', 'data'])
+from scipy.interpolate import interp1d
+
 
 
 
@@ -114,7 +116,7 @@ def get_dataDict(dataset,cell_specimen_id,initial_time,final_time):
     
     dff_data = dff_rgb[:,None]
     events_data = events_rgb[:,None]
-    for cell_id in cell_specimen_id:
+    for cell_id in cell_specimen_id[1:]:
         _,dff_rgb,_ = get_dff(cell_id,initial_time,final_time)
         dff_data = np.hstack((dff_data,dff_rgb[:,None]))
         
@@ -146,3 +148,53 @@ def get_dataDict(dataset,cell_specimen_id,initial_time,final_time):
     return dataDict
     
     
+def upsample(data_tup,bin_ms,initial_time,final_time):
+    # new_X = np.arange(initial_time*1000/bin_ms,(final_time)*1000/bin_ms,bin_ms)
+    new_X = np.arange(initial_time*1000,(final_time)*1000,bin_ms)
+    X = data_tup.timestamps*1000     # convert time into ms first
+    bin_indices = np.digitize(X, new_X)-1
+    if data_tup.data.ndim==1:
+        new_Y = np.bincount(bin_indices, weights=data_tup.data, minlength=len(new_X))
+    else:
+        new_Y = np.zeros((new_X.shape[0],data_tup.data.shape[1]));new_Y[:] = np.nan
+        for i in range(new_Y.shape[1]):
+            new_Y[:,i] = np.bincount(bin_indices, weights=data_tup.data[:,i], minlength=len(new_X))
+            
+    new_Y = new_Y/bin_ms
+    data_tup_new = df_tuple(new_X,new_Y)
+    return data_tup_new
+
+def resample(data_tup,ts_rs,initial_time_fromStim,final_time_fromStim,interp=True):
+    X = data_tup.timestamps.values*1000     # convert time into ms first
+    Y = data_tup.data
+    if X.shape[0]>0:
+        if interp == True:
+            f_out = interp1d(X,Y,axis=0,bounds_error=False,fill_value='extrapolate')
+            Y_new = f_out(ts_rs)
+        else:
+            f_out = interp1d(X,Y,axis=0,bounds_error=False,kind='nearest')
+            Y_new = f_out(ts_rs)
+
+    else:
+        Y_new = np.zeros_like(ts_rs)
+        Y_new[:] = np.nan
+    # data_tup_new = df_tuple(ts_rs,Y_new)
+    data_resamp = Y_new
+    return data_resamp
+
+
+
+# def upsample(data_tup,bin_ms,initial_time,final_time):
+#     new_X = np.arange(initial_time*1000/bin_ms,(final_time)*1000/bin_ms,bin_ms)
+#     X = data_tup.timestamps*1000/bin_ms     # convert time into ms first
+#     bin_indices = np.digitize(X, new_X)-1
+#     if data_tup.data.ndim==1:
+#         new_Y = np.bincount(bin_indices, weights=data_tup.data, minlength=len(new_X))
+#     else:
+#         new_Y = np.zeros((new_X.shape[0],data_tup.data.shape[1]));new_Y[:] = np.nan
+#         for i in range(new_Y.shape[1]):
+#             new_Y[:,i] = np.bincount(bin_indices, weights=data_tup.data[:,i], minlength=len(new_X))
+            
+#     new_Y = new_Y/bin_ms
+#     data_tup_new = df_tuple(new_X,new_Y)
+#     return data_tup_new
