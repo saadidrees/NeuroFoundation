@@ -258,22 +258,28 @@ for select_container in containerIds_nmice:
 
 
 # %% Visualize
+"""
+To add:
+    1. mouse_id
+    
+"""
 
 secsStart = 10
-secsPlot = 10
+secsPlot = 50
 
 secsPlot = np.array((secsStart+secsPlot)*1000/bin_ms,dtype='int')
 secsStart = np.array(secsStart*1000/bin_ms,dtype='int')
 
 idx_toplot = np.arange(secsStart,secsPlot)
 cellToPlot = 5
-sessToPlot = -1
+sessToPlot = 0
 t_axis = idx_toplot*bin_ms/1000
 
 if sessToPlot == -1:
     select_dff = dff_grand[cellToPlot][0]/np.nanmax(dff_grand[cellToPlot][0])
     select_speed = speed_grand[cellToPlot][0]/np.nanmax(speed_grand[cellToPlot][0])
     select_pupil = pupil_grand[cellToPlot][0]/np.nanmax(pupil_grand[cellToPlot][0])
+    select_imgNames = imgNames_grand[cellToPlot][0]
     for i in range(1,len(dff_grand[cellToPlot])):
         rgb = dff_grand[cellToPlot][i]/np.nanmax(dff_grand[cellToPlot][i])
         select_dff = np.concatenate((select_dff,rgb),axis=0)
@@ -283,12 +289,28 @@ if sessToPlot == -1:
         
         rgb = pupil_grand[cellToPlot][i]/np.nanmax(pupil_grand[cellToPlot][i])
         select_pupil = np.concatenate((select_pupil,rgb),axis=0)
+        
+        rgb = imgNames_grand[cellToPlot][i]
+        select_imgNames = np.concatenate((select_imgNames,rgb),axis=0)
+
 
 else:
     select_dff = dff_grand[cellToPlot][sessToPlot];select_dff = select_dff/np.nanmax(select_dff)
     select_speed = speed_grand[cellToPlot][sessToPlot];select_speed = select_speed/np.nanmax(select_speed)
     select_pupil = pupil_grand[cellToPlot][sessToPlot];select_pupil = select_pupil/np.nanmax(select_pupil)
+    select_imgNames = imgNames_grand[cellToPlot][sessToPlot]
+select_imgNames[select_imgNames==0] = '0'
 
+
+unique_stimuli = list(set(select_imgNames[idx_toplot]))
+colormap = {}
+for i in range(len(unique_stimuli)):
+    colormap[unique_stimuli[i]] = sns.color_palette()[i]
+colormap = {image_name: sns.color_palette()[image_number] for image_number,image_name in enumerate(unique_stimuli)}
+colormap['omitted'] = (1,1,1) # set omitted stimulus to white color
+colormap['0'] = (1,1,1) # set empty stimulus to white color
+
+rgb = np.unique(select_imgNames[idx_toplot],return_inverse=True,return_index=True)
 
 cell_info = exp_ids_grand.query('cell_id == @cell_id_grand[@cellToPlot]')
 if sessToPlot > -1:
@@ -301,10 +323,18 @@ fig,axs = plt.subplots(2,1,figsize=(15,7))
 fig.suptitle(title_txt)
 axs = np.ravel(axs)
 axs[0].plot(t_axis,select_dff[idx_toplot],label='dF/F')
+
 axs[1].plot(t_axis,select_speed[idx_toplot],label='speed')
 axs[1].plot(t_axis,select_pupil[idx_toplot],label='pupil')
+
+for i in range(len(idx_toplot)-1):
+    axs[0].axvspan(t_axis[i],t_axis[i+1],color=colormap[select_imgNames[idx_toplot[i]]],alpha=.1)
+    axs[1].axvspan(t_axis[i],t_axis[i+1],color=colormap[select_imgNames[idx_toplot[i]]],alpha=.1)
+
 axs[0].set_ylabel('normalized measurement')
 axs[0].set_xlabel('Time (s)')
+axs[1].set_ylabel('normalized measurement')
+axs[1].set_xlabel('Time (s)')
 axs[0].legend()
 axs[1].legend()
 
