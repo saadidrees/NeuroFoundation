@@ -93,8 +93,8 @@ with the dimension 0 being time.
 select_targetStructure = 'VISam'
 n_mice = 3
 n_cells = -1
-initial_time = 100
-n_dur = 2000
+initial_time = 100  # seconds
+n_dur = 2000        # seconds
 thresh_numSessions = 0
 bin_ms = 16 
 
@@ -108,6 +108,8 @@ pupil_grand = 0
 ts_rs_grand = 0
 imgName_rs_grand = 0
 total_cells = 0
+cell_id_grand = []
+exp_ids_grand = pd.DataFrame()
 
 
 #1
@@ -123,7 +125,7 @@ containerIds_nmice = np.unique(exp_table_subArea.query('mouse_id in @select_mice
 
 # Will have to loop over containers and then experiments
 #3
-select_container = containerIds_nmice[3]
+select_container = containerIds_nmice[0]
 for select_container in containerIds_nmice:
     
     #4
@@ -146,9 +148,9 @@ for select_container in containerIds_nmice:
     cell_id_unique,cell_id_counts = np.unique(cell_id_list,return_counts=True)
     idx_cells = cell_id_counts>thresh_numSessions
     cell_ids_full = cell_id_unique[idx_cells]
+    cell_id_grand = cell_id_grand + cell_id_unique.tolist()
     print('num of cells: %d'%idx_cells.sum())
     total_cells = total_cells + idx_cells.sum()
-
     
     # Get experiment ids / sessions where all these cells are present
     i=0
@@ -163,9 +165,11 @@ for select_container in containerIds_nmice:
     exp_ids_perCell = pd.DataFrame()
     for i in range(len(cell_ids_full)):
         rgb = ophys_exp_ids_inContainer[loc[i,:]]
-        df = pd.DataFrame({'cell_id':cell_ids_full[i],'exp_id':rgb})
+        df = pd.DataFrame({'cell_id':cell_ids_full[i],'exp_id':rgb,'container_id':select_container})
         exp_ids_perCell = pd.concat((exp_ids_perCell,df),axis=0)
-            
+    
+    exp_ids_grand = pd.concat((exp_ids_grand,exp_ids_perCell),axis=0)
+    
     # % Resample Stimulus and build stimulus array 
     dff_cont = np.zeros((cell_ids_full.shape[0]),dtype='object')
     speed_cont = np.zeros((cell_ids_full.shape[0]),dtype='object')
@@ -251,4 +255,56 @@ for select_container in containerIds_nmice:
         pupil_grand = np.concatenate([pupil_grand,pupil_cont],axis=0)               # [[[cells]]][[sessions]][data]
         imgNames_grand = np.concatenate([imgNames_grand,imgNames_rs_cont],axis=0)   # [[[cells]]][[sessions]][data]
         ts_grand = np.concatenate([ts_grand,ts_rs_cont],axis=0)                     # [[[cells]]][[sessions]][data]
+
+
+# %% Visualize
+
+secsStart = 10
+secsPlot = 10
+
+secsPlot = np.array((secsStart+secsPlot)*1000/bin_ms,dtype='int')
+secsStart = np.array(secsStart*1000/bin_ms,dtype='int')
+
+idx_toplot = np.arange(secsStart,secsPlot)
+cellToPlot = 5
+sessToPlot = -1
+t_axis = idx_toplot*bin_ms/1000
+
+if sessToPlot == -1:
+    select_dff = dff_grand[cellToPlot][0]/np.nanmax(dff_grand[cellToPlot][0])
+    select_speed = speed_grand[cellToPlot][0]/np.nanmax(speed_grand[cellToPlot][0])
+    select_pupil = pupil_grand[cellToPlot][0]/np.nanmax(pupil_grand[cellToPlot][0])
+    for i in range(1,len(dff_grand[cellToPlot])):
+        rgb = dff_grand[cellToPlot][i]/np.nanmax(dff_grand[cellToPlot][i])
+        select_dff = np.concatenate((select_dff,rgb),axis=0)
+        
+        rgb = speed_grand[cellToPlot][i]/np.nanmax(speed_grand[cellToPlot][i])
+        select_speed = np.concatenate((select_speed,rgb),axis=0)
+        
+        rgb = pupil_grand[cellToPlot][i]/np.nanmax(pupil_grand[cellToPlot][i])
+        select_pupil = np.concatenate((select_pupil,rgb),axis=0)
+
+else:
+    select_dff = dff_grand[cellToPlot][sessToPlot];select_dff = select_dff/np.nanmax(select_dff)
+    select_speed = speed_grand[cellToPlot][sessToPlot];select_speed = select_speed/np.nanmax(select_speed)
+    select_pupil = pupil_grand[cellToPlot][sessToPlot];select_pupil = select_pupil/np.nanmax(select_pupil)
+
+
+cell_info = exp_ids_grand.query('cell_id == @cell_id_grand[@cellToPlot]')
+if sessToPlot > -1:
+    exp_id = cell_info.iloc[sessToPlot].exp_id
+else:
+    exp_id = -1
+    
+title_txt = 'cell_index: %d | area: %s | cell_id: %d | container: %d | exp_id: %d'%(cellToPlot,select_targetStructure,cell_id_grand[cellToPlot],cell_info.iloc[0].container_id,exp_id)
+fig,axs = plt.subplots(2,1,figsize=(15,7))
+fig.suptitle(title_txt)
+axs = np.ravel(axs)
+axs[0].plot(t_axis,select_dff[idx_toplot],label='dF/F')
+axs[1].plot(t_axis,select_speed[idx_toplot],label='speed')
+axs[1].plot(t_axis,select_pupil[idx_toplot],label='pupil')
+axs[0].set_ylabel('normalized measurement')
+axs[0].set_xlabel('Time (s)')
+axs[0].legend()
+axs[1].legend()
 
