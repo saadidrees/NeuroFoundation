@@ -73,7 +73,7 @@ table_ophysSession = cache.get_ophys_session_table()
 table_ophysExps = cache.get_ophys_experiment_table()
 
 
-# %% Select 
+# %% Load, extract and organize data 
 """
 1. Select cell/area type
 2. Get container ids for that cell/area type
@@ -165,7 +165,8 @@ for select_container in containerIds_nmice:
     exp_ids_perCell = pd.DataFrame()
     for i in range(len(cell_ids_full)):
         rgb = ophys_exp_ids_inContainer[loc[i,:]]
-        df = pd.DataFrame({'cell_id':cell_ids_full[i],'exp_id':rgb,'container_id':select_container})
+        mouse_id = table_ophysExps.loc[rgb].mouse_id
+        df = pd.DataFrame({'cell_id':cell_ids_full[i],'exp_id':rgb,'container_id':select_container,'mouse_id':mouse_id})
         exp_ids_perCell = pd.concat((exp_ids_perCell,df),axis=0)
     
     exp_ids_grand = pd.concat((exp_ids_grand,exp_ids_perCell),axis=0)
@@ -209,7 +210,6 @@ for select_container in containerIds_nmice:
         
         Y_rs = Y_1ms[::bin_ms]
         
-    
         initial_time_fromStim = np.floor((ts_rs[0]/1000)-1).astype('int')
         final_time_fromStim = np.ceil((ts_rs[-1]/1000)+1).astype('int')
     
@@ -259,9 +259,6 @@ for select_container in containerIds_nmice:
 
 # %% Visualize
 """
-To add:
-    1. mouse_id
-    
 """
 
 secsStart = 10
@@ -318,7 +315,7 @@ if sessToPlot > -1:
 else:
     exp_id = -1
     
-title_txt = 'cell_index: %d | area: %s | cell_id: %d | container: %d | exp_id: %d'%(cellToPlot,select_targetStructure,cell_id_grand[cellToPlot],cell_info.iloc[0].container_id,exp_id)
+title_txt = 'cell_index: %d | area: %s | cell_id: %d | container: %d | exp_id: %d | mouse_id: %s'%(cellToPlot,select_targetStructure,cell_id_grand[cellToPlot],cell_info.iloc[0].container_id,exp_id,cell_info.iloc[0].mouse_id)
 fig,axs = plt.subplots(2,1,figsize=(15,7))
 fig.suptitle(title_txt)
 axs = np.ravel(axs)
@@ -337,4 +334,27 @@ axs[1].set_ylabel('normalized measurement')
 axs[1].set_xlabel('Time (s)')
 axs[0].legend()
 axs[1].legend()
+
+
+select_imgTime = 31 # s
+idx_imgTime = np.round(select_imgTime*1000/bin_ms).astype('int')
+imgName = select_imgNames[idx_imgTime]
+
+assert exp_id>-1, 'select just one session'
+if 'dataset' in locals():
+    if dataset.ophys_experiment_id != exp_id:
+        dataset = cache.get_behavior_ophys_experiment(exp_id)
+else:
+    dataset = cache.get_behavior_ophys_experiment(exp_id)
+if imgName == '0' or imgName == 'omitted':
+    stim = np.zeros_like(dataset.stimulus_templates.iloc[0].warped)
+else:
+    stim = dataset.stimulus_templates.loc[imgName].warped
+
+txt_title = '%s @ time %d sec | container: %d | exp_id: %d'%(imgName,select_imgTime,cell_info.iloc[0].container_id,exp_id)
+fig,axs=plt.subplots(1,1,figsize=(10,10))
+axs = np.ravel(axs)
+axs[0].imshow(stim,cmap='gray')
+axs[0].set_title(txt_title)
+
 
