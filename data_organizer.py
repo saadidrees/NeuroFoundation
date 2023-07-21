@@ -88,9 +88,13 @@ Each cell will contain a list of arrays, representing sessions. So if a cell was
 over multiple experiments, it will have multiple arrays. Within each array, data is represented
 with the dimension 0 being time. 
 [[[cells]]][[sessions]][data]
+
+
+ADD NUMBER OF SESSIONS TO EXTRACT? --> Or maybe do this in the step to organize dataset for training
+
 """
 # Define selecting params
-select_targetStructure = 'VISam'
+select_targetStructure = 'VISam'    # VISal', 'VISam', 'VISl', 'VISp
 n_mice = 3
 n_cells = -1
 initial_time = 100  # seconds
@@ -136,7 +140,7 @@ for select_container in containerIds_nmice:
     #5 loop over experiments in container and get list of intersection cells
     cell_id_list = np.array([],dtype='int64')
     cell_specimen_ids_all = []
-    ophys_exp_id = ophys_exp_ids_inContainer[4]
+    ophys_exp_id = ophys_exp_ids_inContainer[0]
     for i in range(ophys_exp_ids_inContainer.shape[0]):
         ophys_exp_id = ophys_exp_ids_inContainer[i]
         dataset = cache.get_behavior_ophys_experiment(ophys_exp_id)
@@ -268,7 +272,7 @@ secsPlot = np.array((secsStart+secsPlot)*1000/bin_ms,dtype='int')
 secsStart = np.array(secsStart*1000/bin_ms,dtype='int')
 
 idx_toplot = np.arange(secsStart,secsPlot)
-cellToPlot = 5
+cellToPlot = 5#5
 sessToPlot = 0
 t_axis = idx_toplot*bin_ms/1000
 
@@ -335,7 +339,7 @@ axs[1].set_xlabel('Time (s)')
 axs[0].legend()
 axs[1].legend()
 
-
+# %%
 select_imgTime = 31 # s
 idx_imgTime = np.round(select_imgTime*1000/bin_ms).astype('int')
 imgName = select_imgNames[idx_imgTime]
