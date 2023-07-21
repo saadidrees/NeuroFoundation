@@ -28,19 +28,21 @@ from scipy.interpolate import interp1d
 
 
 
-def get_dff(cell_specimen_id,initial_time,final_time):
-    dff = ds.dff_traces.loc[cell_specimen_id].dff
+def get_dff(cell_id,initial_time,final_time):
+    dff = ds.dff_traces.loc[cell_id].dff
     timestamps = ds.ophys_timestamps
     
     df = {'data': dff,'timestamps': timestamps}
     df = pd.DataFrame(df)
     df = df.query('timestamps >= @initial_time and timestamps < @final_time')
     
-    return df,df.data,df.timestamps
+    roi = ds.cell_specimen_table.loc[cell_id].roi_mask
+    
+    return df,df.data,df.timestamps,roi
 
 
-def get_events(cell_specimen_id,initial_time,final_time):
-    events = ds.events.loc[cell_specimen_id].events
+def get_events(cell_id,initial_time,final_time):
+    events = ds.events.loc[cell_id].events
     timestamps = ds.ophys_timestamps
     
     df = {'data': events,'timestamps': timestamps}
@@ -111,14 +113,16 @@ def get_dataDict(dataset,cell_specimen_id,initial_time,final_time):
     stimulus_presentations['color'] = dataset.stimulus_presentations['image_name'].map(lambda image_name: colormap[image_name])
     
     cell_id = cell_specimen_id[0]
-    df,dff_rgb,dff_timestamps = get_dff(cell_id,initial_time,final_time)
+    df,dff_rgb,dff_timestamps,roi = get_dff(cell_id,initial_time,final_time)
     df_events,events_rgb,events_timestamps = get_events(cell_id,initial_time,final_time)
     
     dff_data = dff_rgb[:,None]
+    rois_all = roi[:,:,None]
     events_data = events_rgb[:,None]
     for cell_id in cell_specimen_id[1:]:
-        _,dff_rgb,_ = get_dff(cell_id,initial_time,final_time)
+        _,dff_rgb,_,roi = get_dff(cell_id,initial_time,final_time)
         dff_data = np.hstack((dff_data,dff_rgb[:,None]))
+        rois_all = np.concatenate((rois_all,roi[:,:,None]),axis=-1)
         
         _,events_rgb,_ = get_events(cell_id,initial_time,final_time)
         events_data = np.hstack((events_data,events_rgb[:,None]))
@@ -137,6 +141,7 @@ def get_dataDict(dataset,cell_specimen_id,initial_time,final_time):
     
     dataDict = dict(
                     dff=dff,
+                    rois=rois_all,
                     events=events,
                     stim_pres=stim_pres,
                     stimulus_presentations=stimulus_presentations,
