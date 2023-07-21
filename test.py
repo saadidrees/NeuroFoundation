@@ -350,5 +350,15 @@ for epoch in range(n_epochs):
         loss.backward()
         # update weights
         optimizer.step()
+        
+        
+# %% wav2vec2
+
+from models.wav2vec2 import Wav2Vec2Config, Wav2Vec2Model
+
+configuration = Wav2Vec2Config()
+mdl = Wav2Vec2Model(configuration)
+
+
                 
         
