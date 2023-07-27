@@ -99,7 +99,7 @@ n_mice = 1
 n_cells = -1
 initial_time = 100  # seconds
 n_dur = -1 #2000        # seconds
-thresh_numSessions = 0
+thresh_numSessions = 3
 bin_ms = -1#16 
 
 
@@ -208,6 +208,65 @@ for select_container in containerIds_nmice:
         ts_grand.append([ts])                       # [[[cells]]][[sessions]][data]
             
 
+# %% Batch stuff for wav2vec
+"""
+The sampling rate is 11 Hz. So interval time of ~91 ms. If i take 1000 samples in a sequence
+then it will be 91 s per sequence. Which I think is fine. 
+"""
+from data_handler import utils
+# from skimage.transform import rescale, resize, downscale_local_mean
+
+downscale_fac = 4
+chunk_size = 500
+
+dset = []
+
+i=0
+for i in range(len(dff_mov_grand)):
+    rgb = dff_mov_grand[i][0]
+    rgb = rgb[::downscale_fac,::downscale_fac,:]
+    rgb = np.moveaxis(rgb,-1,0)
+    
+    temp = utils.chunker(rgb,chunk_size)
+    dset = dset+temp
+
+dset_train = dset[:25]
+# dset_train = dset[:-10]
+dset_val = dset[-5:]
+
+
+
+# %% for wav2vec2 old
+from skimage.transform import rescale, resize, downscale_local_mean
+from datasets import DatasetDict
+
+mov_train = dff_mov_grand[0][0][:,:,:100]
+mov_train = np.moveaxis(mov_train,-1,0)
+mov_train = downscale_local_mean(mov_train,factors=(1,2,2))
+mov_train = dict(input_values=mov_train)
+
+mov_val = dff_mov_grand[5][0][:,:,:50]
+mov_val = np.moveaxis(mov_val,-1,0)
+mov_val = downscale_local_mean(mov_val,factors=(1,2,2))
+mov_val = dict(input_values=mov_val)
+
+
+mov_train = [DatasetDict(mov_train)]
+mov_val = [DatasetDict(mov_val)]
+
+# %%
+batch_start = np.arange(0,len(dset),4)
+i = 0
+for i in range(len(dset)):
+    rgb = dset[batch_start[i]:batch_start[i+1]]
+    a1 = rgb[0]['input_values'].shape[0]
+    a2 = rgb[1]['input_values'].shape[0]
+    a3 = rgb[2]['input_values'].shape[0]
+    a4 = rgb[3]['input_values'].shape[0]
+    
+    a = np.array([a1,a2,a3,a4])
+    assert np.all(a == 500)
+
 # %% Prepare train/test dataset
 from data_handler import utils
 from skimage.transform import rescale, resize, downscale_local_mean
@@ -223,6 +282,7 @@ train_X = train_X[:,:10]
 
 train_X = torch.tensor(train_X,dtype=torch.float32)
 train_y = torch.tensor(train_y,dtype=torch.float32)
+
 
 # %% Feat Encoder
 
