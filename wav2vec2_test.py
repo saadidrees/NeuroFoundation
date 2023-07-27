@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Created on Wed Jul 26 14:55:37 2023
+
+@author: Saad Idrees idrees.sa@gmail.com
+         jZ Lab, York University
+"""
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
 Created on Thu Jul 20 11:11:47 2023
 
 @author: Saad Idrees idrees.sa@gmail.com
          jZ Lab, York University
 """
 
+# %% Import packages
 import argparse
 import math
 import os
@@ -24,17 +34,34 @@ from torch.utils.data.dataloader import DataLoader
 from tqdm.auto import tqdm
 
 import transformers
+# from transformers import (
+#     AdamW,
+#     SchedulerType,
+#     Wav2Vec2Config,
+#     Wav2Vec2FeatureExtractor,
+#     Wav2Vec2ForPreTraining,
+#     get_scheduler,
+#     is_wandb_available,
+#     set_seed,
+# )
+
 from transformers import (
     AdamW,
     SchedulerType,
-    Wav2Vec2Config,
-    Wav2Vec2FeatureExtractor,
-    Wav2Vec2ForPreTraining,
     get_scheduler,
     is_wandb_available,
     set_seed,
 )
-from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
+
+import models.wav2vec2.feature_extraction_wav2vec2
+from models.wav2vec2.feature_extraction_wav2vec2 import Wav2Vec2FeatureExtractor
+import models.wav2vec2.modeling_wav2vec2
+from models.wav2vec2.modeling_wav2vec2 import Wav2Vec2ForPreTraining
+import models.wav2vec2.configuration_wav2vec2
+from models.wav2vec2.configuration_wav2vec2 import Wav2Vec2Config
+
+# from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
+from models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
 from transformers.utils import get_full_repo_name, send_example_telemetry
 
 
@@ -56,8 +83,8 @@ argsDict = dict(
     min_duration_in_seconds=2.0,
     logging_steps=1,
     saving_steps=10000,
-    per_device_train_batch_size=12,
-    per_device_eval_batch_size=12,
+    per_device_train_batch_size=4,
+    per_device_eval_batch_size=2,
     adam_beta1=0.9,
     adam_beta2=0.98,
     adam_epsilon=1e-06,
@@ -124,6 +151,7 @@ class DataCollatorForWav2Vec2Pretraining:
 
     model: Wav2Vec2ForPreTraining
     feature_extractor: Wav2Vec2FeatureExtractor
+    
     padding: Union[bool, str] = "longest"
     pad_to_multiple_of: Optional[int] = None
     mask_time_prob: Optional[float] = 0.65
@@ -141,7 +169,8 @@ class DataCollatorForWav2Vec2Pretraining:
         device = batch["input_values"].device
         batch_size = batch["input_values"].shape[0]
 
-        mask_indices_seq_length = self.model._get_feat_extract_output_lengths(batch["input_values"].shape[-1])
+        # mask_indices_seq_length = self.model._get_feat_extract_output_lengths(batch["input_values"].shape[-1])
+        mask_indices_seq_length = self.model._get_feat_extract_output_lengths(batch["input_values"].shape[1])
         # make sure masked sequence length is a Python scalar
         mask_indices_seq_length = int(mask_indices_seq_length)
 
@@ -218,22 +247,22 @@ if args.seed is not None:
     set_seed(args.seed)
 
 # Handle the repository creation
-# if accelerator.is_main_process:
-#     if args.push_to_hub and not args.preprocessing_only:
-#         if args.hub_model_id is None:
-#             repo_name = get_full_repo_name(Path(args.output_dir).name, token=args.hub_token)
-#         else:
-#             repo_name = args.hub_model_id
-#         create_repo(repo_name, exist_ok=True, token=args.hub_token)
-#         repo = Repository(args.output_dir, clone_from=repo_name, token=args.hub_token)
-#     elif args.output_dir is not None:
-#         os.makedirs(args.output_dir, exist_ok=True)
-# accelerator.wait_for_everyone()
+if accelerator.is_main_process:
+    if args.push_to_hub and not args.preprocessing_only:
+        if args.hub_model_id is None:
+            repo_name = get_full_repo_name(Path(args.output_dir).name, token=args.hub_token)
+        else:
+            repo_name = args.hub_model_id
+        create_repo(repo_name, exist_ok=True, token=args.hub_token)
+        repo = Repository(args.output_dir, clone_from=repo_name, token=args.hub_token)
+    elif args.output_dir is not None:
+        os.makedirs(args.output_dir, exist_ok=True)
+accelerator.wait_for_everyone()
 
-# 1. Download and create train, validation dataset
+
+# ---- 1. Dataset
 # We load all dataset configuration and datset split pairs passed in
 # ``args.dataset_config_names`` and ``args.dataset_split_names``
-# ---- dataset
 datasets_splits = []
 for dataset_config_name, train_split_name in zip(args.dataset_config_names, args.dataset_split_names):
     # load dataset
@@ -243,7 +272,11 @@ for dataset_config_name, train_split_name in zip(args.dataset_config_names, args
         split=train_split_name,
         cache_dir=args.cache_dir,
     )
+    # dataset_split = dataset_split[:10]
     datasets_splits.append(dataset_split)
+
+# Only take the first 10 datsaets for testing
+# datasets_splits = [datasets_splits[0][:10]]
 
 # Next, we concatenate all configurations and splits into a single training dataset
 raw_datasets = DatasetDict()
@@ -270,6 +303,7 @@ raw_datasets["train"] = raw_datasets["train"].select(range(num_validation_sample
 # so that we just need to set the correct target sampling rate and normalize the input
 # via the `feature_extractor`
 feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(args.model_name_or_path)
+# feature_extractor.return_attention_mask=False
 
 # make sure that dataset decodes audio with correct sampling rate
 raw_datasets = raw_datasets.cast_column(
@@ -329,8 +363,10 @@ with accelerator.main_process_first():
 # if args.preprocessing_only:
 #     return
 
-# 3. Load model
-config = Wav2Vec2Config.from_pretrained(args.model_name_or_path)
+# %%---- 3. Load model
+# config = Wav2Vec2Config.from_pretrained(args.model_name_or_path)
+config = Wav2Vec2Config()
+
 
 # pretraining is only supported for "newer" stable layer norm architecture
 # apply_spec_augment has to be True, mask_feature_prob has to be 0.0
@@ -359,15 +395,27 @@ data_collator = DataCollatorForWav2Vec2Pretraining(
     mask_time_prob=mask_time_prob,
     mask_time_length=mask_time_length,
 )
+"""
 train_dataloader = DataLoader(
     vectorized_datasets["train"],
-    shuffle=True,
+    shuffle=False, #True,
     collate_fn=data_collator,
     batch_size=args.per_device_train_batch_size,
 )
 eval_dataloader = DataLoader(
     vectorized_datasets["validation"], collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
 )
+"""
+train_dataloader = DataLoader(
+    dset_train,
+    shuffle=False,
+    collate_fn=data_collator,
+    batch_size=args.per_device_train_batch_size,
+)
+eval_dataloader = DataLoader(
+    dset_val, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
+)
+
 
 # Optimizer
 optimizer = AdamW(
@@ -396,7 +444,7 @@ lr_scheduler = get_scheduler(
 )
 
 # Afterwards we recalculate our number of training epochs
-args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+# args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
 # ---- 5. Train
 import os
@@ -420,10 +468,16 @@ starting_epoch = 0
 progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
 completed_steps = 0
 starting_epoch = 0
+epoch=0
+counter=0
+
 for epoch in range(starting_epoch, args.num_train_epochs):
     model.train()
+    # for step, batch in enumerate(train_dataloader):
     for step, batch in enumerate(train_dataloader):
         # compute num of losses
+        counter+=1
+        print('counter: %d'%counter)
         num_losses = batch["mask_time_indices"].sum()
         sub_attention_mask = batch.pop("sub_attention_mask", None)
         sub_attention_mask = (
@@ -432,12 +486,15 @@ for epoch in range(starting_epoch, args.num_train_epochs):
         percent_masked = num_losses / sub_attention_mask.sum()
 
         # forward
+        torch.cuda.empty_cache()
         outputs = model(**batch)
+        break
 
         # divide loss by gradient accumulation steps since gradients
         # are accumulated for multiple backward passes in PyTorch
         loss = outputs.loss / args.gradient_accumulation_steps
         accelerator.backward(loss)
+        print('loss: %f'%loss)
 
         # make sure that `num_losses` is summed for distributed training
         # and average gradients over losses of all devices
