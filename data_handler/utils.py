@@ -73,3 +73,24 @@ def unroll_data(data,time_axis=0,rolled_axis=1):
     rgb = np.concatenate((rgb,data[1:,data.shape[1]-1,:]),axis=0)
     # rgb = np.concatenate((rgb,data[-1:,0,:]),axis=0)
     return rgb
+
+
+def chunker(X,chunk_size,truncate=True):
+    data_list = []
+    counter = 0
+    batch_startIdx = np.arange(0, X.shape[0], chunk_size)
+    for cbatch in batch_startIdx:
+        temp = []
+        counter+=1
+        # print('chunk %d of %d'%(counter,len(batch_startIdx)))
+        if truncate==True:
+            if cbatch + chunk_size < X.shape[0]:
+                temp = X[cbatch:(cbatch + chunk_size)]
+        else:
+            temp = X[cbatch:(cbatch + chunk_size)]
+        
+        if len(temp)>0:
+            temp = dict(input_values=temp)
+            data_list.append(temp)
+        
+    return data_list
