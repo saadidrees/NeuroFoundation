@@ -55,17 +55,17 @@ ophys_session_table = cache.get_ophys_session_table()
 experiment_table = cache.get_ophys_experiment_table()
 
 
-# %% Select Experiment to download
+
 ophys_exp_id = 957759570
 dataset = cache.get_behavior_ophys_experiment(ophys_exp_id)
-
-# %% Extract and plot data
 cell_specimen_table = dataset.cell_specimen_table
 cell_specimen_ids = cell_specimen_table.index.values
 
+# %% Extract and plot data
+
 initial_time = 820
 final_time = 840
-idx_cell = np.array([0,1])  # np.array([0])
+idx_cell = np.array([0,1,2,3,4,5])  # np.array([0])
 cell_specimen_id = cell_specimen_ids[idx_cell]
 
 dataDict = dataExtractor.get_dataDict(dataset,cell_specimen_id,initial_time,final_time)
@@ -86,7 +86,9 @@ axs = np.ravel(axs)
 axs[0].plot(dff.timestamps,dff.data,label='dF/F')
 for _,stimulus in stim_pres.iterrows():
     axs[0].axvspan(stimulus['start_time'],stimulus['end_time'],color=stimulus['color'],alpha=.25)
-axs[0].legend()
+axs[0].set_ylabel('dF/F')
+axs[0].set_xlabel('Time (s)')
+# axs[0].legend()
 
 # axs[1].plot(events.timestamps,events.data,label='events')
 # for _,stimulus in stim_pres.iterrows():
