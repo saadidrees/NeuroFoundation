@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Wed Jun 21 11:42:28 2023
+Created on Tue Jul 18 16:03:02 2023
 
 @author: Saad Idrees idrees.sa@gmail.com
          jZ Lab, York University
 """
 
 """
+Requires installation of allen sdk. Follow https://allensdk.readthedocs.io/en/latest/_static/examples/nb/visual_behavior_ophys_data_access.html
+
 - Experiment table contains ophys experiment ids as well as associated metadata with them (cre_line, session_type, project_code, etc). 
     This table gives you an overview of what data at the level of each experiment is available. The term experiment is used to describe one 
     imaging plane during one session. For sessions that are imaged using mesoscope (equipment_name = MESO.1), there will be up to 4 experiments 
@@ -35,38 +37,20 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from collections import namedtuple
 df_tuple = namedtuple('df_tuple', ['timestamps', 'data'])
+import time
+import re
 
-
-import allensdk
 from allensdk.brain_observatory.behavior.behavior_project_cache import VisualBehaviorOphysProjectCache
-import allensdk.brain_observatory.behavior.behavior_project_cache as bpc
 
 from data_handler import dataExtractor
 
-
-DOWNLOAD_COMPLETE_DATASET = False 
 
 output_dir = "/home/saad/data/analyses/allen/raw/"
 output_dir = Path(output_dir)
 cache = VisualBehaviorOphysProjectCache.from_s3_cache(cache_dir=output_dir)     # download manifest files
 
-"""
-dset_generator
-The ideal dset_generator should be able to pull out:
-    1. Data for all cells for N mice
-    2. N cells
-    3. Time window
-    4. Cells within a container exceeding threshold for number of experiments
-    
-The final dset should look like:
-    - dff: [time,experiments,cells]
-    - stimulus: [time,experiments]
-    - speed: [time,experiments]
-    - pupil: [time,experiments]
-"""
 
 table_behavior = cache.get_behavior_session_table()
 table_ophysSession = cache.get_ophys_session_table()
@@ -83,61 +67,62 @@ table_ophysExps = cache.get_ophys_experiment_table()
 5. Loop over experiments within the container and get the ids of cells that are
    common across sessions (or not if you set threshold to 0)
 
-This section will create a set of arrays where each row is for a difference cell.
-Each cell will contain a list of arrays, representing sessions. So if a cell was recorded
-over multiple experiments, it will have multiple arrays. Within each array, data is represented
-with the dimension 0 being time. 
-[[[cells]]][[sessions]][data]
-
+This section will generate the following:
+    dff_grand --> [[experiment]][time,units] --> rows of list are for different experiments. Each numpy array in the list gives calcium signal for all units in that experiment
+    dff_mov_grand --> [[experiment]][y,x,time]  --> A numpy array within a list. Rows of list are for individual experiments
+    dff_mov_grand_metadata --> [[experiment]] contains the stimulus that was shown at each time point
+    ophys_exp_id_grand --> [[experiments]] contains the id of experiments corresponding to above variables. 
+    exp_ids_grand --> dataframe containing meta information
 
 ADD NUMBER OF SESSIONS TO EXTRACT? --> Or maybe do this in the step to organize dataset for training
 
 """
-# Define selecting params
+# ---- loading parameters
 select_targetStructure = 'VISam'    # VISal', 'VISam', 'VISl', 'VISp
-n_mice = 3
-n_cells = -1
+n_mice = 1
+n_cells = -1        # -1 = all cells
 initial_time = 100  # seconds
-n_dur = 2000        # seconds
-thresh_numSessions = 0
-bin_ms = 16 
+n_dur = -1 #2000        # seconds | -1 = till end
 
 
-final_time = initial_time + n_dur
+if n_dur>0:
+    final_time = initial_time + n_dur
+else:
+    final_time = -1
 
-# Initialize empty variables where the number of rows will eventually correspond to number of cells
-dff_grand = 0
-speed_grand = 0
-pupil_grand = 0
-ts_rs_grand = 0
-imgName_rs_grand = 0
+# ---- Initialize empty lists for final data
+dff_grand = []                  # [experiments][time,units]
+dff_mov_grand = []              # [experiments][rows,cols,time] <-- movie
+dff_mov_grand_metadata = []     # [experiments][timestamps,stim] <-- this contains the stimulus name that was shown at each timestamp. 0 indicates no stimulus
+ts_grand = []                   # [experiments][timestamps] <--- corresponds to time axis in above variables
 total_cells = 0
-cell_id_grand = []
-exp_ids_grand = pd.DataFrame()
+cell_id_grand = []              # [units]
+exp_ids_grand = pd.DataFrame()  # metadata for each unit in the dataset
+ophys_exp_id_grand = []         # [experiments]
+mouse_id_grand = []             # all mouse ids 
 
 
-#1
-targetStructures_all = np.unique(table_ophysExps.targeted_structure)
+# ---- 1. select target structure
+targetStructures_all = np.unique(table_ophysExps.targeted_structure)         # All the target structures in ABO
 exp_table_subArea = table_ophysExps.query('targeted_structure == @select_targetStructure')
 
-#2
-containerIds_all = np.unique(exp_table_subArea.ophys_container_id)
-unique_mice = np.unique(exp_table_subArea.mouse_id.values)
-select_miceIds = unique_mice[:n_mice]
+# ---- 2. select mice
+# containerIds_all = np.unique(exp_table_subArea.ophys_container_id)
+unique_mice = np.unique(exp_table_subArea.mouse_id.values)              #  All unique mice ids for this structure
+select_miceIds = unique_mice[:n_mice]                                    # Select ids for n_mice only
 
-containerIds_nmice = np.unique(exp_table_subArea.query('mouse_id in @select_miceIds').ophys_container_id)
+containerIds_nmice = np.unique(exp_table_subArea.query('mouse_id in @select_miceIds').ophys_container_id)   # All container ids corresponding to target structure and n_mice
 
-# Will have to loop over containers and then experiments
-#3
-select_container = containerIds_nmice[0]
+# ---- 3 Loop over containers and then experiments
+# select_container = containerIds_nmice[0]
 for select_container in containerIds_nmice:
     
-    #4
+    # Select all experiments within a container 
     exp_table_subset = exp_table_subArea.query('ophys_container_id == @select_container')# and targeted_structure == @select_targetStructure')
     ophys_exp_ids_inContainer = exp_table_subset.index.values
     
     
-    #5 loop over experiments in container and get list of intersection cells
+    # loop over experiments in container and get list of all units in that container
     cell_id_list = np.array([],dtype='int64')
     cell_specimen_ids_all = []
     ophys_exp_id = ophys_exp_ids_inContainer[0]
@@ -150,215 +135,133 @@ for select_container in containerIds_nmice:
         cell_specimen_ids_all.append(cell_specimen_ids)
     
     cell_id_unique,cell_id_counts = np.unique(cell_id_list,return_counts=True)
-    idx_cells = cell_id_counts>thresh_numSessions
-    cell_ids_full = cell_id_unique[idx_cells]
     cell_id_grand = cell_id_grand + cell_id_unique.tolist()
-    print('num of cells: %d'%idx_cells.sum())
-    total_cells = total_cells + idx_cells.sum()
+    print('num of cells: %d'%len(cell_id_unique))
+    total_cells = total_cells + len(cell_id_unique)
     
-    # Get experiment ids / sessions where all these cells are present
-    i=0
-    loc = np.zeros((cell_ids_full.shape[0],len(ophys_exp_ids_inContainer)),dtype='bool')
+    # Following two loops build the exp_ids_perCell dataframe which stores info for each unit id
+    # For each unit id, it stores the experiment ids the unit was recorded in, the container id and the mouse id
+    loc = np.zeros((cell_id_unique.shape[0],len(ophys_exp_ids_inContainer)),dtype='bool')
     for i in range(len(cell_specimen_ids_all)):
         rgb = cell_specimen_ids_all[i]
-        loc[:,i] = np.isin(cell_ids_full,rgb)
-        countPerExp = np.sum(np.isin(cell_ids_full,rgb))
-        print(countPerExp)
+        loc[:,i] = np.isin(cell_id_unique,rgb)      # row is for each unit, column tells which exp ids this unit belongs to
         
-    i=1
     exp_ids_perCell = pd.DataFrame()
-    for i in range(len(cell_ids_full)):
+    for i in range(len(cell_id_unique)):
         rgb = ophys_exp_ids_inContainer[loc[i,:]]
         mouse_id = table_ophysExps.loc[rgb].mouse_id
-        df = pd.DataFrame({'cell_id':cell_ids_full[i],'exp_id':rgb,'container_id':select_container,'mouse_id':mouse_id})
+        df = pd.DataFrame({'cell_id':cell_id_unique[i],'exp_id':rgb,'container_id':select_container,'mouse_id':mouse_id})
         exp_ids_perCell = pd.concat((exp_ids_perCell,df),axis=0)
     
     exp_ids_grand = pd.concat((exp_ids_grand,exp_ids_perCell),axis=0)
     
-    # % Resample Stimulus and build stimulus array 
-    dff_cont = np.zeros((cell_ids_full.shape[0]),dtype='object')
-    speed_cont = np.zeros((cell_ids_full.shape[0]),dtype='object')
-    pupil_cont = np.zeros((cell_ids_full.shape[0]),dtype='object')
-    ts_rs_cont = np.zeros((cell_ids_full.shape[0]),dtype='object')
-    imgNames_rs_cont = np.zeros((cell_ids_full.shape[0]),dtype='object')
-    
     
     # Inner loop over experiments. This should append 'sessions'
-    ophys_exp_id = ophys_exp_ids_inContainer[0]
+    # ophys_exp_id = ophys_exp_ids_inContainer[0]
     for ophys_exp_id in ophys_exp_ids_inContainer:
         dataset = cache.get_behavior_ophys_experiment(ophys_exp_id)
+        ophys_framerate = dataset.metadata['ophys_frame_rate']
         
+        cell_id_toExtract = np.array(exp_ids_perCell.query('exp_id == @ophys_exp_id').cell_id)      # cell ids in this experiment
+        # cell_idxInFull = np.intersect1d(cell_id_toExtract,cell_id_unique,return_indices=True)[2]    # location of these cell ids in the master cell id list which is given by cell_id_unique
         
-        cell_id_toExtract = np.array(exp_ids_perCell.query('exp_id == @ophys_exp_id').cell_id)
-        cell_idxInFull = np.intersect1d(cell_id_toExtract,cell_ids_full,return_indices=True)[2]
+        if final_time == -1:
+            timestamps = dataset.ophys_timestamps
+            final_time = np.floor(timestamps[-1])
+        dataDict = dataExtractor.get_dataDict(dataset,cell_id_toExtract,initial_time,final_time)     # makes a dictionary containing dff, licks, pupil etc etc for this experiment
         
-        dataDict = dataExtractor.get_dataDict(dataset,cell_id_toExtract,initial_time,final_time)
-        stim_pres_orig = dataDict['stim_pres']
-        stimulus_presentations_orig = dataDict['stimulus_presentations']
-    
-        stim_startTimes = np.round(np.array(stim_pres_orig.start_time)*1000)
-        stim_endTimes = np.round(np.array(stim_pres_orig.end_time)*1000)
-        stim_times = np.concatenate((stim_startTimes[:,None],stim_endTimes[:,None]),axis=1).astype('int64')
+        dff = dataDict['dff'].data                  # calcium signal [time,units]
+        ts = dataDict['dff'].timestamps.values      # timestamps corresponding to dff
+        rois = dataDict['rois']                     # rois for each unit [y,x,units]
         
-        ts_1ms = np.arange(stim_startTimes[0],stim_endTimes[-1])
-        ts_rs = ts_1ms[::bin_ms]
-        
-        
-        Y_1ms = np.zeros(ts_1ms.shape,dtype='object')
+        stimLabel_dff = np.zeros((dff.shape[0]),dtype='object')     # this will contain the stimilus name for each time step
+        unique_stimuli = [stimulus for stimulus in dataDict['stim_pres'].image_name.unique()]
         i=0
-        for i in range(stim_times.shape[0]):
-            img_name = stim_pres_orig.iloc[i].image_name
-            idx_range = (np.arange(stim_times[i,0],stim_times[i,1])-ts_1ms[0]).astype('int32')
-            Y_1ms[idx_range] = img_name
+        for i in range(len(unique_stimuli)):
+            selectedStim = unique_stimuli[i]
+            idx_selectedStim = dataDict['stim_pres'].image_name==selectedStim
+            ts_selectedStim = np.array(dataDict['stim_pres'].loc[idx_selectedStim,['start_time','end_time']])
+            
+            a = np.diff(ts_selectedStim,axis=0)
+            thresh_gaps = 20    # seconds
+            b = np.where(a[:,0]>thresh_gaps)[0]
+            c_start = np.concatenate((np.array([0]),b+1))
+            c_end = np.concatenate((np.array([0]),b))
+                
+            selectedStim_startEnd = np.array([ts_selectedStim[c_start[:-1],0],ts_selectedStim[c_end[1:],1]]).T
+            j=0
+            for j in range(selectedStim_startEnd.shape[0]):
+                idx_ts = np.logical_and(ts>selectedStim_startEnd[j,0],ts<selectedStim_startEnd[j,1])
+                stimLabel_dff[idx_ts] = selectedStim
+    
+                
+        roi_movie = np.zeros((rois.shape[0],rois.shape[1],dff.shape[0]))
         
+        i=0
+        for i in range(dff.shape[-1]):  # loop over num of cells
+            idx = np.where(rois[:,:,i])
+            roi_movie[idx[0],idx[1],:] = dff[:,i]
         
-        Y_rs = Y_1ms[::bin_ms]
+        df_movie_meta = pd.DataFrame(ts,columns=['timestamps'])
+        df_movie_meta['stim'] = stimLabel_dff
         
-        initial_time_fromStim = np.floor((ts_rs[0]/1000)-1).astype('int')
-        final_time_fromStim = np.ceil((ts_rs[-1]/1000)+1).astype('int')
-    
-        dataDict = dataExtractor.get_dataDict(dataset,cell_id_toExtract,initial_time_fromStim,final_time_fromStim)
-        dff_orig = dataDict['dff']
-        events_orig = dataDict['events']
-        speed_orig = dataDict['speed']
-        pupil_orig = dataDict['pupil']
-        licks_orig = dataDict['licks'];licks_orig.data = 1
-        rewards_orig = dataDict['rewards'];rewards_orig.data = 1
-    
-        dff = dataExtractor.resample(dff_orig,ts_rs,initial_time_fromStim,final_time_fromStim)
-        speed = dataExtractor.resample(speed_orig,ts_rs,initial_time,final_time)
-        pupil = dataExtractor.resample(pupil_orig,ts_rs,initial_time,final_time)
-        licks = dataExtractor.resample(licks_orig,ts_rs,initial_time,final_time,interp=False)
-        rewards = dataExtractor.resample(rewards_orig,ts_rs,initial_time,final_time)
-        
-        for i in range(cell_idxInFull.shape[0]):
-            if np.isscalar(dff_cont[cell_idxInFull[i]]):
-                dff_cont[cell_idxInFull[i]] = [dff[:,i]]
-                speed_cont[cell_idxInFull[i]] = [speed]
-                pupil_cont[cell_idxInFull[i]] = [pupil]
-                imgNames_rs_cont[cell_idxInFull[i]] = [Y_rs]
-                ts_rs_cont[cell_idxInFull[i]] = [ts_rs]
-            else:
-                dff_cont[cell_idxInFull[i]].append(dff[:,i])
-                speed_cont[cell_idxInFull[i]].append(speed)
-                pupil_cont[cell_idxInFull[i]].append(pupil)
-                imgNames_rs_cont[cell_idxInFull[i]].append(Y_rs)
-                ts_rs_cont[cell_idxInFull[i]].append(ts_rs)
-    
-    
-    if np.isscalar(dff_grand):
-        dff_grand = dff_cont
-        speed_grand = speed_cont
-        pupil_grand = pupil_cont
-        imgNames_grand = imgNames_rs_cont
-        ts_grand = ts_rs_cont
-    
-    else:
-        dff_grand = np.concatenate([dff_grand,dff_cont],axis=0)                     # [[[cells]]][[sessions]][data]
-        speed_grand = np.concatenate([speed_grand,speed_cont],axis=0)               # [[[cells]]][[sessions]][data]
-        pupil_grand = np.concatenate([pupil_grand,pupil_cont],axis=0)               # [[[cells]]][[sessions]][data]
-        imgNames_grand = np.concatenate([imgNames_grand,imgNames_rs_cont],axis=0)   # [[[cells]]][[sessions]][data]
-        ts_grand = np.concatenate([ts_grand,ts_rs_cont],axis=0)                     # [[[cells]]][[sessions]][data]
+        dff_grand.append(dff)                     # [[experiments]][time,units]
+        dff_mov_grand.append(roi_movie)           # [[experiments]][y,x,time]
+        dff_mov_grand_metadata.append(df_movie_meta) # [[experiments]]
+        ts_grand.append([ts])                       # [[experiments]][time]
+        ophys_exp_id_grand.append(ophys_exp_id)
+        mouse_id = np.unique(exp_ids_grand.query('exp_id==@ophys_exp_id').mouse_id.astype('int'))[0]
+        mouse_id_grand.append(mouse_id)
+            
 
-
-# %% Visualize
+# %% Train Val dsets for wav2vec
 """
+The sampling rate is 11 Hz. So interval time of ~91 ms. If i take 1000 samples in a sequence
+then it will be 91 s per sequence. Which I think is fine. 
 """
-
-secsStart = 10
-secsPlot = 50
-
-secsPlot = np.array((secsStart+secsPlot)*1000/bin_ms,dtype='int')
-secsStart = np.array(secsStart*1000/bin_ms,dtype='int')
-
-idx_toplot = np.arange(secsStart,secsPlot)
-cellToPlot = 5#5
-sessToPlot = 0
-t_axis = idx_toplot*bin_ms/1000
-
-if sessToPlot == -1:
-    select_dff = dff_grand[cellToPlot][0]/np.nanmax(dff_grand[cellToPlot][0])
-    select_speed = speed_grand[cellToPlot][0]/np.nanmax(speed_grand[cellToPlot][0])
-    select_pupil = pupil_grand[cellToPlot][0]/np.nanmax(pupil_grand[cellToPlot][0])
-    select_imgNames = imgNames_grand[cellToPlot][0]
-    for i in range(1,len(dff_grand[cellToPlot])):
-        rgb = dff_grand[cellToPlot][i]/np.nanmax(dff_grand[cellToPlot][i])
-        select_dff = np.concatenate((select_dff,rgb),axis=0)
-        
-        rgb = speed_grand[cellToPlot][i]/np.nanmax(speed_grand[cellToPlot][i])
-        select_speed = np.concatenate((select_speed,rgb),axis=0)
-        
-        rgb = pupil_grand[cellToPlot][i]/np.nanmax(pupil_grand[cellToPlot][i])
-        select_pupil = np.concatenate((select_pupil,rgb),axis=0)
-        
-        rgb = imgNames_grand[cellToPlot][i]
-        select_imgNames = np.concatenate((select_imgNames,rgb),axis=0)
+from data_handler import utils
 
 
-else:
-    select_dff = dff_grand[cellToPlot][sessToPlot];select_dff = select_dff/np.nanmax(select_dff)
-    select_speed = speed_grand[cellToPlot][sessToPlot];select_speed = select_speed/np.nanmax(select_speed)
-    select_pupil = pupil_grand[cellToPlot][sessToPlot];select_pupil = select_pupil/np.nanmax(select_pupil)
-    select_imgNames = imgNames_grand[cellToPlot][sessToPlot]
-select_imgNames[select_imgNames==0] = '0'
+unique_stimuli = np.zeros((0),dtype='object')
+i=0
+for i in range(len(dff_mov_grand_metadata)):
+    rgb = np.array(dff_mov_grand_metadata[i].stim.unique())
+    unique_stimuli = np.concatenate((unique_stimuli,rgb),axis=0)
+unique_stimuli[unique_stimuli==0]='0'
+unique_stimuli = np.unique(unique_stimuli)
+print(unique_stimuli)
 
 
-unique_stimuli = list(set(select_imgNames[idx_toplot]))
-colormap = {}
-for i in range(len(unique_stimuli)):
-    colormap[unique_stimuli[i]] = sns.color_palette()[i]
-colormap = {image_name: sns.color_palette()[image_number] for image_number,image_name in enumerate(unique_stimuli)}
-colormap['omitted'] = (1,1,1) # set omitted stimulus to white color
-colormap['0'] = (1,1,1) # set empty stimulus to white color
+stim_val = 'im115_r'
+downscale_fac = 4
+context_len = 80
 
-rgb = np.unique(select_imgNames[idx_toplot],return_inverse=True,return_index=True)
+dset_train = []
+dset_val = []
 
-cell_info = exp_ids_grand.query('cell_id == @cell_id_grand[@cellToPlot]')
-if sessToPlot > -1:
-    exp_id = cell_info.iloc[sessToPlot].exp_id
-else:
-    exp_id = -1
+i=0
+for i in range(len(dff_mov_grand)):
+    mov = dff_mov_grand[i]
+    mov = mov[::downscale_fac,::downscale_fac,:]
+    mov = np.moveaxis(mov,-1,0)
     
-title_txt = 'cell_index: %d | area: %s | cell_id: %d | container: %d | exp_id: %d | mouse_id: %s'%(cellToPlot,select_targetStructure,cell_id_grand[cellToPlot],cell_info.iloc[0].container_id,exp_id,cell_info.iloc[0].mouse_id)
-fig,axs = plt.subplots(2,1,figsize=(15,7))
-fig.suptitle(title_txt)
-axs = np.ravel(axs)
-axs[0].plot(t_axis,select_dff[idx_toplot],label='dF/F')
+    idx_train = np.array(dff_mov_grand_metadata[i].stim != stim_val)
+    idx_val = ~idx_train
+    
+    mov_train = mov[idx_train]
+    mov_val = mov[idx_val]
+    
+    dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                         ophys_exp_id=ophys_exp_id_grand[i])
+    temp = utils.chunker(mov_train,context_len,dict_metadata=dict_metadata)
+    dset_train = dset_train+temp
+    
+    temp = utils.chunker(mov_val,context_len,dict_metadata=dict_metadata)
+    dset_val = dset_val+temp
 
-axs[1].plot(t_axis,select_speed[idx_toplot],label='speed')
-axs[1].plot(t_axis,select_pupil[idx_toplot],label='pupil')
 
-for i in range(len(idx_toplot)-1):
-    axs[0].axvspan(t_axis[i],t_axis[i+1],color=colormap[select_imgNames[idx_toplot[i]]],alpha=.1)
-    axs[1].axvspan(t_axis[i],t_axis[i+1],color=colormap[select_imgNames[idx_toplot[i]]],alpha=.1)
-
-axs[0].set_ylabel('normalized measurement')
-axs[0].set_xlabel('Time (s)')
-axs[1].set_ylabel('normalized measurement')
-axs[1].set_xlabel('Time (s)')
-axs[0].legend()
-axs[1].legend()
-
-# %%
-select_imgTime = 31 # s
-idx_imgTime = np.round(select_imgTime*1000/bin_ms).astype('int')
-imgName = select_imgNames[idx_imgTime]
-
-assert exp_id>-1, 'select just one session'
-if 'dataset' in locals():
-    if dataset.ophys_experiment_id != exp_id:
-        dataset = cache.get_behavior_ophys_experiment(exp_id)
-else:
-    dataset = cache.get_behavior_ophys_experiment(exp_id)
-if imgName == '0' or imgName == 'omitted':
-    stim = np.zeros_like(dataset.stimulus_templates.iloc[0].warped)
-else:
-    stim = dataset.stimulus_templates.loc[imgName].warped
-
-txt_title = '%s @ time %d sec | container: %d | exp_id: %d'%(imgName,select_imgTime,cell_info.iloc[0].container_id,exp_id)
-fig,axs=plt.subplots(1,1,figsize=(10,10))
-axs = np.ravel(axs)
-axs[0].imshow(stim,cmap='gray')
-axs[0].set_title(txt_title)
+# dset_train = dset[:-5]
+# # dset_train = dset[:-10]
+dset_val = dset_val[-5:]
 
 
