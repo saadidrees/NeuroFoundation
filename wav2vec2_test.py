@@ -1,28 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Wed Jul 26 14:55:37 2023
-
-@author: Saad Idrees idrees.sa@gmail.com
-         jZ Lab, York University
-"""
-
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
 Created on Thu Jul 20 11:11:47 2023
 
 @author: Saad Idrees idrees.sa@gmail.com
          jZ Lab, York University
+"""
+"""
+NOTE 1
+
+Wav2Vec2's pre-training is known to be quite unstable.
+It is advised to do a couple of test runs with a smaller dataset, 
+i.e. --dataset_config_names clean clean, --dataset_split_names validation test
+to find good hyper-parameters for learning_rate, batch_size, num_warmup_steps,
+and the optimizer. A good metric to observe during training is the gradient norm 
+which should ideally be between 0.5 and 2.
 """
 
 # %% Import packages
 import argparse
 import math
 import os
+import gc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Union
+import matplotlib.pyplot as plt
+import os
+import time
+import shutil
+import numpy as np
+
 
 import datasets
 import torch
@@ -74,44 +82,48 @@ argsDict = dict(
     dataset_split_names=['train.clean.100'],
     model_name_or_path="patrickvonplaten/wav2vec2-base-v2",
     output_dir="/home/saad/data/analyses/wav2vec2/wav2vec2-pretrained-demo",
-    max_train_steps=20000,
-    num_warmup_steps=32000,
-    gradient_accumulation_steps=8,
-    learning_rate=0.005,
+    
+    max_train_steps=None,
+    num_train_epochs=1000,
+    per_device_train_batch_size=64,
+    per_device_eval_batch_size=5,
+    gradient_accumulation_steps=1,  # 8
+
+    lr_scheduler_type='linear',     # ['linear', 'cosine', 'cosine_with_restarts', 'polynomial', 'constant', 'constant_with_warmup', 'inverse_sqrt', 'reduce_lr_on_plateau']
+    num_warmup_steps=24000, #32000,
+    learning_rate=1e-3, #0.005,
     weight_decay=0.01,
-    max_duration_in_seconds=20.0,
-    min_duration_in_seconds=2.0,
-    logging_steps=1,
-    saving_steps=10000,
-    per_device_train_batch_size=4,
-    per_device_eval_batch_size=2,
     adam_beta1=0.9,
     adam_beta2=0.98,
     adam_epsilon=1e-06,
-    gradient_checkpointing=True,
-    mask_time_prob=0.65,
-    mask_time_length=10,
-    num_train_epochs=3,
-
-    preprocessing_num_workers=None,
-    validation_split_percentage=1,
-    audio_column_name='audio',
-    config_name=None,
-    train_cache_file_name=None,
-    validation_cache_file_name=None,
-    lr_scheduler_type='linear',
-    seed=0,
+    
     max_gumbel_temperature=2,
     min_gumbel_temperature=0.5,
     gumbel_temperature_decay=0.999995,
+
+    logging_steps=1,
+    saving_steps=1000,
+    gradient_checkpointing=True,
+    mask_time_prob=0.65,
+    mask_time_length=10,
+
+    preprocessing_num_workers=None,
+    validation_split_percentage=1,
+    # audio_column_name='audio',
+    config_name=None,
+    train_cache_file_name=None,
+    validation_cache_file_name=None,
+    seed=0,
     pad_to_multiple_of=None,
     cache_dir=None,
     preprocessing_only=None,
-    push_to_hub = False
+    push_to_hub = False,
+    
     )
 args=namedtuple('args',argsDict)
 args=args(**argsDict)
-# %%
+
+# %% init functions
 @dataclass
 class DataCollatorForWav2Vec2Pretraining:
     """
@@ -225,7 +237,8 @@ def get_grad_norm(params, scale=1):
     return total_norm
 
 
-# %% main
+
+# %% Accelerator
 # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
 accelerator = Accelerator()
 logger.info(accelerator.state, main_process_only=False)
@@ -260,7 +273,411 @@ if accelerator.is_main_process:
 accelerator.wait_for_everyone()
 
 
-# ---- 1. Dataset
+# %% Model
+# config = Wav2Vec2Config.from_pretrained(args.model_name_or_path)
+config = Wav2Vec2Config(dim_inputSpat=128)
+feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(args.model_name_or_path)
+feature_extractor.sampling_rate = 11
+
+
+# pretraining is only supported for "newer" stable layer norm architecture
+# apply_spec_augment has to be True, mask_feature_prob has to be 0.0
+if not config.do_stable_layer_norm or config.feat_extract_norm != "layer":
+    raise ValueError(
+        "PreTraining is only supported for ``config.do_stable_layer_norm=True`` and"
+        " ``config.feat_extract_norm='layer'"
+    )
+
+# initialize random model
+model = Wav2Vec2ForPreTraining(config)
+
+# Activate gradient checkpointing if needed
+if args.gradient_checkpointing:
+    model.gradient_checkpointing_enable()
+
+# 4. Define data collator, optimizer and scheduler
+
+mask_time_prob = config.mask_time_prob if args.mask_time_prob is None else args.mask_time_prob
+mask_time_length = config.mask_time_length if args.mask_time_length is None else args.mask_time_length
+
+data_collator = DataCollatorForWav2Vec2Pretraining(
+    model=model,
+    feature_extractor=feature_extractor,
+    pad_to_multiple_of=args.pad_to_multiple_of,
+    mask_time_prob=mask_time_prob,
+    mask_time_length=mask_time_length,
+)
+"""
+train_dataloader = DataLoader(
+    vectorized_datasets["train"],
+    shuffle=False, #True,
+    collate_fn=data_collator,
+    batch_size=args.per_device_train_batch_size,
+)
+eval_dataloader = DataLoader(
+    vectorized_datasets["validation"], collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
+)
+"""
+keys_to_remove = ('mouse_id','ophys_exp_id')
+vec_dset_train = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_train))
+vec_dset_val = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_val))
+
+train_dataloader = DataLoader(
+    vec_dset_train,
+    shuffle=True,
+    collate_fn=data_collator,
+    batch_size=args.per_device_train_batch_size,
+)
+eval_dataloader = DataLoader(
+    vec_dset_val, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
+)
+
+
+# Optimizer
+optimizer = AdamW(
+    list(model.parameters()),
+    lr=args.learning_rate,
+    betas=[args.adam_beta1, args.adam_beta2],
+    eps=args.adam_epsilon,
+)
+
+# Prepare everything with our `accelerator`.
+model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader, eval_dataloader
+)
+
+# Scheduler and math around the number of training steps.
+num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)   # after how many batches should stuff be updated
+
+if args.max_train_steps is None:
+    max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+else:
+    max_train_steps = args.max_train_steps
+    
+
+lr_scheduler = get_scheduler(
+    name=args.lr_scheduler_type,
+    optimizer=optimizer,
+    num_warmup_steps=args.num_warmup_steps,
+    num_training_steps=max_train_steps,
+)
+# Afterwards we recalculate our number of training epochs
+# args.num_train_epochs = math.ceil(max_train_steps / num_update_steps_per_epoch)
+
+# ---- Train
+if os.path.isdir(args.output_dir):
+    shutil.rmtree(args.output_dir)
+
+
+total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
+
+logger.info("***** Running training *****")
+logger.info(f"  Num examples = {len(vec_dset_train)}")
+logger.info(f"  Num Epochs = {args.num_train_epochs}")
+logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
+logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
+logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
+logger.info(f"  Total optimization steps = {max_train_steps}")
+completed_steps = 0
+starting_epoch = 0
+
+# Only show the progress bar once on each machine.
+progress_bar = tqdm(range(max_train_steps), disable=not accelerator.is_local_main_process)
+completed_steps = 0
+starting_epoch = 0
+epoch=0
+counter=0
+t_epochs=[]
+t_steps=[]
+
+tloss_train = []
+tloss_val = []
+closs_train = []
+closs_val = []
+dloss_train = []
+dloss_val = []
+gnorm = []
+lr_train = []
+
+for epoch in range(starting_epoch, args.num_train_epochs):
+    gc.collect()
+    model.train()
+    # for step, batch in enumerate(train_dataloader):
+    start_time_epoch = time.time()
+    for step, batch in enumerate(train_dataloader):
+        # print(step,batch['input_values'].shape[0])
+        counter+=1
+        start_time_step = time.time()
+        
+        # compute num of losses
+        num_losses = batch["mask_time_indices"].sum()
+        sub_attention_mask = batch.pop("sub_attention_mask", None)
+        sub_attention_mask = (
+            sub_attention_mask if sub_attention_mask is not None else torch.ones_like(batch["mask_time_indices"])
+        )
+        percent_masked = num_losses / sub_attention_mask.sum()
+
+        # forward
+        torch.cuda.empty_cache()
+        outputs = model(**batch)        # 
+        
+        """
+        projected_quantized_states: [batch_size, seq_len, proj_codevector_dim]
+        projected_states: [batch_size, seq_len, proj_codevector_dim]
+        hidden_states: [num_attention_heads+1?][batch_size,seq_len,hidden_size]
+        """
+        
+
+        # divide loss by gradient accumulation steps since gradients
+        # are accumulated for multiple backward passes in PyTorch
+        loss = outputs.loss / args.gradient_accumulation_steps
+        accelerator.backward(loss)
+
+        # make sure that `num_losses` is summed for distributed training
+        # and average gradients over losses of all devices
+        if accelerator.state.num_processes > 1:
+            num_losses = accelerator.gather_for_metrics(num_losses).sum()
+            gradient_multiplier = accelerator.state.num_processes / num_losses
+            multiply_grads(model.module.parameters(), gradient_multiplier)
+        else:
+            multiply_grads(model.parameters(), 1 / num_losses)
+
+        # update step
+        if (step + 1) % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+            # compute grad norm for monitoring
+            scale = (
+                accelerator.scaler._scale.item()
+                if hasattr(accelerator, "scaler") and accelerator.scaler is not None
+                else 1
+            )
+            if accelerator.state.num_processes > 1:
+                grad_norm = get_grad_norm(model.module.parameters(), scale)
+            else:
+                grad_norm = get_grad_norm(model.parameters(), scale)
+
+            # update parameters
+            optimizer.step()
+            optimizer.zero_grad()
+
+            if not accelerator.optimizer_step_was_skipped:
+                lr_scheduler.step()
+            elif accelerator.is_local_main_process:
+                progress_bar.write(
+                    f"Gradients have overflown - skipping update step... Updating gradient scale to {scale}..."
+                )
+
+            # update gumbel temperature
+            gumbel_temperature = max(
+                args.max_gumbel_temperature * args.gumbel_temperature_decay**completed_steps,
+                args.min_gumbel_temperature,
+            )
+            if hasattr(model, "module"):
+                model.module.set_gumbel_temperature(gumbel_temperature)
+            else:
+                model.set_gumbel_temperature(gumbel_temperature)
+
+            progress_bar.update(1)
+            completed_steps += 1
+
+        # 6. Log all results
+        if (step + 1) % (args.gradient_accumulation_steps * args.logging_steps) == 0:
+            loss.detach()
+            outputs.contrastive_loss.detach()
+            outputs.diversity_loss.detach()
+
+            if accelerator.state.num_processes > 1:
+                loss = accelerator.gather_for_metrics(loss).sum()
+                outputs.contrastive_loss = accelerator.gather_for_metrics(outputs.contrastive_loss).sum()
+                outputs.diversity_loss = accelerator.gather_for_metrics(outputs.diversity_loss).sum()
+                percent_masked = accelerator.gather_for_metrics(percent_masked).sum()
+
+            train_logs = {
+                "loss": (loss * args.gradient_accumulation_steps) / num_losses,
+                "constrast_loss": outputs.contrastive_loss / num_losses,
+                "div_loss": outputs.diversity_loss / num_losses,
+                "%_mask_idx": percent_masked / accelerator.num_processes,
+                "ppl": outputs.codevector_perplexity,
+                "lr": torch.tensor(optimizer.param_groups[0]["lr"]),
+                "temp": torch.tensor(gumbel_temperature),
+                "grad_norm": torch.tensor(grad_norm),
+            }
+            
+            tloss_train.append(train_logs['loss'].detach().cpu())
+            closs_train.append(train_logs['constrast_loss'].detach().cpu())
+            dloss_train.append(train_logs['div_loss'].detach().cpu())
+            gnorm.append(train_logs['grad_norm'].detach().cpu())
+            lr_train.append(train_logs['lr'].detach().cpu())
+
+            log_str = ""
+            for k, v in train_logs.items():
+                log_str += "| {}: {:.3e}".format(k, v.item())
+
+            if accelerator.is_local_main_process:
+                progress_bar.write(log_str)
+                if is_wandb_available():
+                    wandb.log(train_logs)
+                    
+
+        # save model every `args.saving_steps` steps
+        if (step + 1) % (args.gradient_accumulation_steps * args.saving_steps) == 0:
+            if (args.push_to_hub and epoch < args.num_train_epochs - 1) or args.output_dir is not None:
+                accelerator.wait_for_everyone()
+                unwrapped_model = accelerator.unwrap_model(model)
+                unwrapped_model.save_pretrained(
+                    args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
+                )
+
+            if (args.push_to_hub and epoch < args.num_train_epochs - 1) and accelerator.is_main_process:
+                repo.push_to_hub(
+                    commit_message=f"Training in progress step {completed_steps}",
+                    blocking=False,
+                    auto_lfs_prune=True,
+                )
+
+        # if completed steps > `args.max_train_steps` stop
+        
+        if completed_steps >= max_train_steps:
+            torch.cuda.empty_cache()
+            break
+        
+        torch.cuda.empty_cache()
+        
+        elapsed_time_step = time.time()-start_time_step
+        t_steps.append(elapsed_time_step)
+    
+    # 7. Validate!
+    model.eval()
+
+    # init logs
+    val_logs = {
+        "val_loss": 0,
+        "val_contrastive_loss": 0,
+        "val_diversity_loss": 0,
+        "val_num_losses": 0,
+    }
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            batch.pop("sub_attention_mask", None)
+            outputs = model(**batch)
+
+        val_logs["val_loss"] += outputs.loss
+        val_logs["val_contrastive_loss"] += outputs.contrastive_loss
+        val_logs["val_diversity_loss"] += outputs.diversity_loss
+        val_logs["val_num_losses"] += batch["mask_time_indices"].sum()
+
+
+    # sum over devices in multi-processing
+    if accelerator.num_processes > 1:
+        val_logs = {k: accelerator.gather_for_metrics(v).sum() for k, v in val_logs.items()}
+
+    val_logs = {k: v / val_logs["val_num_losses"] for k, v in val_logs.items()}
+
+    tloss_val.append(val_logs['val_loss'].detach().cpu())
+    closs_val.append(val_logs['val_contrastive_loss'].detach().cpu())
+    dloss_val.append(val_logs['val_diversity_loss'].detach().cpu())
+
+    log_str = ""
+    for k, v in val_logs.items():
+        log_str += "| {}: {:.3e}".format(k, v.item())
+
+    if accelerator.is_local_main_process:
+        progress_bar.write(log_str)
+        if is_wandb_available():
+            wandb.log(val_logs)
+
+    if args.output_dir is not None:
+        accelerator.wait_for_everyone()
+        unwrapped_model = accelerator.unwrap_model(model)
+        unwrapped_model.save_pretrained(
+            args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
+        )
+        if accelerator.is_main_process:
+            if args.push_to_hub:
+                repo.push_to_hub(commit_message="End of training", auto_lfs_prune=True)
+    
+    
+    elapsed_time_epoch = time.time()-start_time_epoch
+    t_epochs.append(elapsed_time_epoch)
+
+tloss_train = np.array(tloss_train)
+closs_train = np.array(closs_train)
+dloss_train = np.array(dloss_train)
+lr_train = np.array(lr_train)
+gnorm = np.array(gnorm)
+closs_val = np.array(closs_val)
+dloss_val = np.array(dloss_val)
+tloss_val = np.array(tloss_val)
+
+# ---- Save training / val losses
+import csv
+fname_saveLosses = os.path.join(args.output_dir,'model_losses.csv')
+
+header = ['train_tloss','train_closs','train_dloss','lr','gnorm','val_tloss','val_closs','val_dloss']
+tloss_val_csv = np.empty(tloss_train.shape[0]);tloss_val_csv[:]=np.nan
+tloss_val_csv[:tloss_val.shape[0]] = tloss_val
+closs_val_csv = np.empty(closs_train.shape[0]);closs_val_csv[:]=np.nan
+closs_val_csv[:closs_val.shape[0]] = closs_val
+dloss_val_csv = np.empty(dloss_train.shape[0]);dloss_val_csv[:]=np.nan
+dloss_val_csv[:dloss_val.shape[0]] = dloss_val
+
+csv_data = np.concatenate((tloss_train[:,None],closs_train[:,None],dloss_train[:,None],lr_train[:,None],gnorm[:,None],tloss_val_csv[:,None],closs_val_csv[:,None],dloss_val_csv[:,None]),axis=1)
+       
+with open(fname_saveLosses,'w',newline='',encoding='utf-8') as csvfile:
+    csvwriter = csv.writer(csvfile) 
+    csvwriter.writerow(header) 
+    for i in range(csv_data.shape[0]):
+        csvwriter.writerow(csv_data[i]) 
+
+
+"""
+tloss_train_csvread = []
+closs_train_csvread = []
+dloss_train_csvread = []
+lr_train_csvread = []
+gnorm_csvread = []
+tloss_val_csvread = []
+closs_val_csvread = []
+dloss_val_csvread = []
+
+with open(fname_saveLosses,'r') as csvfile:
+    csvreader = csv.DictReader(csvfile)
+    for row in csvreader:
+        tloss_train_csvread.append(row['train_tloss'])
+        closs_train_csvread.append(row['train_closs'])
+        dloss_train_csvread.append(row['train_dloss'])
+        lr_train_csvread.append(row['lr'])
+        gnorm_csvread.append(row['gnorm'])
+        tloss_val_csvread.append(row['val_tloss'])
+        closs_val_csvread.append(row['val_closs'])
+        dloss_val_csvread.append(row['val_dloss'])
+
+tloss_train_csvread = np.asarray(tloss_train_csvread,dtype='float64')
+closs_train_csvread = np.asarray(closs_train_csvread,dtype='float64')
+dloss_train_csvread = np.asarray(dloss_train_csvread,dtype='float64')
+lr_train_csvread = np.asarray(lr_train_csvread,dtype='float64')
+gnorm_csvread = np.asarray(gnorm_csvread,dtype='float64')
+tloss_val_csvread = np.asarray(tloss_val_csvread,dtype='float64')
+closs_val_csvread = np.asarray(closs_val_csvread,dtype='float64')
+dloss_val_csvread = np.asarray(dloss_val_csvread,dtype='float64')
+"""
+
+# %% Plot losses
+tloss_train = np.array(closs_train) + (config.diversity_loss_weight * np.array(dloss_train))
+tloss_val = np.array(closs_val) + (config.diversity_loss_weight * np.array(dloss_val))
+
+xaxis_val = np.linspace(0,tloss_train.shape[0],num=tloss_val.shape[0])
+
+fontsize=12
+fig,axs = plt.subplots(2,3,figsize=(20,10));axs=np.ravel(axs)
+axs[0].plot(tloss_train,label='train');axs[0].plot(xaxis_val,tloss_val,label='val');axs[0].set_xlabel('Steps');axs[0].set_title('Total loss');axs[0].legend()
+axs[1].plot(closs_train,label='train');axs[1].plot(xaxis_val,closs_val,label='val');axs[1].set_xlabel('Steps');axs[1].set_title('contrastive loss');axs[0].legend()
+axs[2].plot(dloss_train,label='train');axs[2].plot(xaxis_val,dloss_val,label='val');axs[2].set_xlabel('Steps');axs[2].set_title('diversity loss');axs[0].legend()
+axs[3].plot(lr_train);axs[3].set_xlabel('Steps');axs[3].set_title('lr')
+axs[4].plot(gnorm);axs[4].set_xlabel('Steps');axs[4].set_title('gradient norm')
+
+
+
+# %% [old] Dataset
 # We load all dataset configuration and datset split pairs passed in
 # ``args.dataset_config_names`` and ``args.dataset_split_names``
 datasets_splits = []
@@ -362,282 +779,3 @@ with accelerator.main_process_first():
 
 # if args.preprocessing_only:
 #     return
-
-# %%---- 3. Load model
-# config = Wav2Vec2Config.from_pretrained(args.model_name_or_path)
-config = Wav2Vec2Config()
-
-
-# pretraining is only supported for "newer" stable layer norm architecture
-# apply_spec_augment has to be True, mask_feature_prob has to be 0.0
-if not config.do_stable_layer_norm or config.feat_extract_norm != "layer":
-    raise ValueError(
-        "PreTraining is only supported for ``config.do_stable_layer_norm=True`` and"
-        " ``config.feat_extract_norm='layer'"
-    )
-
-# initialize random model
-model = Wav2Vec2ForPreTraining(config)
-
-# Activate gradient checkpointing if needed
-if args.gradient_checkpointing:
-    model.gradient_checkpointing_enable()
-
-# 4. Define data collator, optimizer and scheduler
-
-mask_time_prob = config.mask_time_prob if args.mask_time_prob is None else args.mask_time_prob
-mask_time_length = config.mask_time_length if args.mask_time_length is None else args.mask_time_length
-
-data_collator = DataCollatorForWav2Vec2Pretraining(
-    model=model,
-    feature_extractor=feature_extractor,
-    pad_to_multiple_of=args.pad_to_multiple_of,
-    mask_time_prob=mask_time_prob,
-    mask_time_length=mask_time_length,
-)
-"""
-train_dataloader = DataLoader(
-    vectorized_datasets["train"],
-    shuffle=False, #True,
-    collate_fn=data_collator,
-    batch_size=args.per_device_train_batch_size,
-)
-eval_dataloader = DataLoader(
-    vectorized_datasets["validation"], collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
-)
-"""
-train_dataloader = DataLoader(
-    dset_train,
-    shuffle=False,
-    collate_fn=data_collator,
-    batch_size=args.per_device_train_batch_size,
-)
-eval_dataloader = DataLoader(
-    dset_val, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
-)
-
-
-# Optimizer
-optimizer = AdamW(
-    list(model.parameters()),
-    lr=args.learning_rate,
-    betas=[args.adam_beta1, args.adam_beta2],
-    eps=args.adam_epsilon,
-)
-
-# Prepare everything with our `accelerator`.
-model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
-    model, optimizer, train_dataloader, eval_dataloader
-)
-
-# Scheduler and math around the number of training steps.
-num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-
-if args.max_train_steps is None:
-    args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-
-lr_scheduler = get_scheduler(
-    name=args.lr_scheduler_type,
-    optimizer=optimizer,
-    num_warmup_steps=args.num_warmup_steps,
-    num_training_steps=args.max_train_steps,
-)
-
-# Afterwards we recalculate our number of training epochs
-# args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
-
-# ---- 5. Train
-import os
-os.environ['PYTORCH_NO_CUDA_MEMORY_CACHING'] = '1'
-os.environ['max_split_size_mb'] = '512'
-
-
-total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
-
-logger.info("***** Running training *****")
-logger.info(f"  Num examples = {len(vectorized_datasets['train'])}")
-logger.info(f"  Num Epochs = {args.num_train_epochs}")
-logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
-logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
-logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
-logger.info(f"  Total optimization steps = {args.max_train_steps}")
-completed_steps = 0
-starting_epoch = 0
-
-# Only show the progress bar once on each machine.
-progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
-completed_steps = 0
-starting_epoch = 0
-epoch=0
-counter=0
-
-for epoch in range(starting_epoch, args.num_train_epochs):
-    model.train()
-    # for step, batch in enumerate(train_dataloader):
-    for step, batch in enumerate(train_dataloader):
-        # compute num of losses
-        counter+=1
-        print('counter: %d'%counter)
-        num_losses = batch["mask_time_indices"].sum()
-        sub_attention_mask = batch.pop("sub_attention_mask", None)
-        sub_attention_mask = (
-            sub_attention_mask if sub_attention_mask is not None else torch.ones_like(batch["mask_time_indices"])
-        )
-        percent_masked = num_losses / sub_attention_mask.sum()
-
-        # forward
-        torch.cuda.empty_cache()
-        outputs = model(**batch)
-        break
-
-        # divide loss by gradient accumulation steps since gradients
-        # are accumulated for multiple backward passes in PyTorch
-        loss = outputs.loss / args.gradient_accumulation_steps
-        accelerator.backward(loss)
-        print('loss: %f'%loss)
-
-        # make sure that `num_losses` is summed for distributed training
-        # and average gradients over losses of all devices
-        if accelerator.state.num_processes > 1:
-            num_losses = accelerator.gather_for_metrics(num_losses).sum()
-            gradient_multiplier = accelerator.state.num_processes / num_losses
-            multiply_grads(model.module.parameters(), gradient_multiplier)
-        else:
-            multiply_grads(model.parameters(), 1 / num_losses)
-
-        # update step
-        if (step + 1) % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-            # compute grad norm for monitoring
-            scale = (
-                accelerator.scaler._scale.item()
-                if hasattr(accelerator, "scaler") and accelerator.scaler is not None
-                else 1
-            )
-            if accelerator.state.num_processes > 1:
-                grad_norm = get_grad_norm(model.module.parameters(), scale)
-            else:
-                grad_norm = get_grad_norm(model.parameters(), scale)
-
-            # update parameters
-            optimizer.step()
-            optimizer.zero_grad()
-
-            if not accelerator.optimizer_step_was_skipped:
-                lr_scheduler.step()
-            elif accelerator.is_local_main_process:
-                progress_bar.write(
-                    f"Gradients have overflown - skipping update step... Updating gradient scale to {scale}..."
-                )
-
-            # update gumbel temperature
-            gumbel_temperature = max(
-                args.max_gumbel_temperature * args.gumbel_temperature_decay**completed_steps,
-                args.min_gumbel_temperature,
-            )
-            if hasattr(model, "module"):
-                model.module.set_gumbel_temperature(gumbel_temperature)
-            else:
-                model.set_gumbel_temperature(gumbel_temperature)
-
-            progress_bar.update(1)
-            completed_steps += 1
-
-        # 6. Log all results
-        if (step + 1) % (args.gradient_accumulation_steps * args.logging_steps) == 0:
-            loss.detach()
-            outputs.contrastive_loss.detach()
-            outputs.diversity_loss.detach()
-
-            if accelerator.state.num_processes > 1:
-                loss = accelerator.gather_for_metrics(loss).sum()
-                outputs.contrastive_loss = accelerator.gather_for_metrics(outputs.contrastive_loss).sum()
-                outputs.diversity_loss = accelerator.gather_for_metrics(outputs.diversity_loss).sum()
-                percent_masked = accelerator.gather_for_metrics(percent_masked).sum()
-
-            train_logs = {
-                "loss": (loss * args.gradient_accumulation_steps) / num_losses,
-                "constrast_loss": outputs.contrastive_loss / num_losses,
-                "div_loss": outputs.diversity_loss / num_losses,
-                "%_mask_idx": percent_masked / accelerator.num_processes,
-                "ppl": outputs.codevector_perplexity,
-                "lr": torch.tensor(optimizer.param_groups[0]["lr"]),
-                "temp": torch.tensor(gumbel_temperature),
-                "grad_norm": torch.tensor(grad_norm),
-            }
-            log_str = ""
-            for k, v in train_logs.items():
-                log_str += "| {}: {:.3e}".format(k, v.item())
-
-            if accelerator.is_local_main_process:
-                progress_bar.write(log_str)
-                if is_wandb_available():
-                    wandb.log(train_logs)
-
-        # save model every `args.saving_steps` steps
-        if (step + 1) % (args.gradient_accumulation_steps * args.saving_steps) == 0:
-            if (args.push_to_hub and epoch < args.num_train_epochs - 1) or args.output_dir is not None:
-                accelerator.wait_for_everyone()
-                unwrapped_model = accelerator.unwrap_model(model)
-                unwrapped_model.save_pretrained(
-                    args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
-                )
-
-            if (args.push_to_hub and epoch < args.num_train_epochs - 1) and accelerator.is_main_process:
-                repo.push_to_hub(
-                    commit_message=f"Training in progress step {completed_steps}",
-                    blocking=False,
-                    auto_lfs_prune=True,
-                )
-
-        # if completed steps > `args.max_train_steps` stop
-        
-        if completed_steps >= args.max_train_steps:
-            torch.cuda.empty_cache()
-            break
-        
-        torch.cuda.empty_cache()
-    
-    # 7. Validate!
-    model.eval()
-
-    # init logs
-    val_logs = {
-        "val_loss": 0,
-        "val_contrastive_loss": 0,
-        "val_diversity_loss": 0,
-        "val_num_losses": 0,
-    }
-    for step, batch in enumerate(eval_dataloader):
-        with torch.no_grad():
-            batch.pop("sub_attention_mask", None)
-            outputs = model(**batch)
-
-        val_logs["val_loss"] += outputs.loss
-        val_logs["val_contrastive_loss"] += outputs.contrastive_loss
-        val_logs["val_diversity_loss"] += outputs.diversity_loss
-        val_logs["val_num_losses"] += batch["mask_time_indices"].sum()
-
-    # sum over devices in multi-processing
-    if accelerator.num_processes > 1:
-        val_logs = {k: accelerator.gather_for_metrics(v).sum() for k, v in val_logs.items()}
-
-    val_logs = {k: v / val_logs["val_num_losses"] for k, v in val_logs.items()}
-
-    log_str = ""
-    for k, v in val_logs.items():
-        log_str += "| {}: {:.3e}".format(k, v.item())
-
-    if accelerator.is_local_main_process:
-        progress_bar.write(log_str)
-        if is_wandb_available():
-            wandb.log(val_logs)
-
-    if args.output_dir is not None:
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(
-            args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
-        )
-        if accelerator.is_main_process:
-            if args.push_to_hub:
-                repo.push_to_hub(commit_message="End of training", auto_lfs_prune=True)
