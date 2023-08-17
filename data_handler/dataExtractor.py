@@ -26,8 +26,6 @@ from scipy.interpolate import interp1d
 
 
 
-
-
 def get_dff(cell_id,initial_time,final_time):
     dff = ds.dff_traces.loc[cell_id].dff
     timestamps = ds.ophys_timestamps
