@@ -75,7 +75,7 @@ def unroll_data(data,time_axis=0,rolled_axis=1):
     return rgb
 
 
-def chunker(X,chunk_size,truncate=True):
+def chunker(X,chunk_size,truncate=True,dict_metadata=None):
     data_list = []
     counter = 0
     batch_startIdx = np.arange(0, X.shape[0], chunk_size)
@@ -91,6 +91,8 @@ def chunker(X,chunk_size,truncate=True):
         
         if len(temp)>0:
             temp = dict(input_values=temp)
+            if dict_metadata is not None:
+                temp = temp | dict_metadata
             data_list.append(temp)
         
     return data_list
