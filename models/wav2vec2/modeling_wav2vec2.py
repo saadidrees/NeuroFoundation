@@ -1,17 +1,29 @@
-# coding=utf-8
-# Copyright 2021 The Fairseq Authors and the HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""
+This is a modified version of the original modeling_wav2vec2.py
+Modifications done by: Saad Idrees idrees.sa@gmail.com 
+                       jZ Lab, York University
+List of modifications:
+    - added a 3D CNN feature encoder
+
+batch,.ba
+Below is the original copyright statement
+
+coding=utf-8
+Copyright 2021 The Fairseq Authors and the HuggingFace Inc. team. All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
 """ PyTorch Wav2Vec2 model."""
 
 import math
@@ -379,11 +391,11 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
         
         self.maxpool = nn.MaxPool3d((1,config.maxpool_kernel_spatial[layer_id],config.maxpool_kernel_spatial[layer_id]),
                                     stride=(1,config.maxpool_stride_spatial[layer_id],config.maxpool_stride_spatial[layer_id]))
-        print('layer_id')
+        # print('layer_id')
         print(layer_id)
         dim_cnnMpOut = _get_layerOutputDim(layer_id+1)
         
-        print('dim:%d'%dim_cnnMpOut)
+        # print('dim:%d'%dim_cnnMpOut)
         self.layer_norm = nn.LayerNorm([self.out_conv_dim,dim_cnnMpOut,dim_cnnMpOut],elementwise_affine=True)
         self.activation = ACT2FN[config.feat_extract_activation]
         
@@ -397,6 +409,8 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
         hidden_states = self.layer_norm(hidden_states)
         hidden_states = hidden_states.transpose(1,2)
         hidden_states = self.activation(hidden_states)
+        # print(hidden_states.shape)
+
         return hidden_states
     
 
