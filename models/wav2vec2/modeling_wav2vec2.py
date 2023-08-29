@@ -5,7 +5,7 @@ Modifications done by: Saad Idrees idrees.sa@gmail.com
 List of modifications:
     - added a 3D CNN feature encoder
 
-batch,.ba
+len(dset_svmtest1)batch,.ba
 Below is the original copyright statement
 
 coding=utf-8
@@ -1381,6 +1381,9 @@ class Wav2Vec2PreTrainedModel(PreTrainedModel):
         >>> model.load_adapter("spa")
         ```
         """
+        
+        print('------ TEST---------')        
+        
         if self.config.adapter_attn_dim is None:
             raise ValueError(f"Cannot load_adapter for {target_lang} if `config.adapter_attn_dim` is not defined.")
 
@@ -1399,6 +1402,8 @@ class Wav2Vec2PreTrainedModel(PreTrainedModel):
 
         model_path_or_id = self.config._name_or_path
         state_dict = None
+        
+        print('------------ TEST-----------')
 
         # 1. Let's first try loading a safetensors adapter weight
         if use_safetensors is not False:
@@ -1452,6 +1457,7 @@ class Wav2Vec2PreTrainedModel(PreTrainedModel):
                     cache_dir=cache_dir,
                 )
 
+                
                 state_dict = torch.load(weight_path, map_location="cpu")
 
             except EnvironmentError:
