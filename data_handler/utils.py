@@ -93,6 +93,8 @@ def chunker(X,chunk_size,truncate=True,dict_metadata=None):
             temp = dict(input_values=temp)
             if dict_metadata is not None:
                 temp = temp | dict_metadata
+                if 'stiminfo' in temp:
+                    temp['stiminfo'] = temp['stiminfo'].iloc[cbatch:(cbatch + chunk_size)]
             data_list.append(temp)
         
     return data_list
