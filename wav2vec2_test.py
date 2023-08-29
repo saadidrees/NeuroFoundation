@@ -81,16 +81,16 @@ argsDict = dict(
     dataset_config_names=["clean","clean"],
     dataset_split_names=['train.clean.100'],
     model_name_or_path="patrickvonplaten/wav2vec2-base-v2",
-    output_dir="/home/saad/data/analyses/wav2vec2/wav2vec2-pretrained-demo",
+    output_dir="/home/saad/data/analyses/wav2vec2/wav2vec2-epochs/",
     
     max_train_steps=None,
-    num_train_epochs=1000,
-    per_device_train_batch_size=64,
-    per_device_eval_batch_size=5,
+    num_train_epochs=100,
+    per_device_train_batch_size=128,
+    per_device_eval_batch_size=128,
     gradient_accumulation_steps=1,  # 8
 
     lr_scheduler_type='linear',     # ['linear', 'cosine', 'cosine_with_restarts', 'polynomial', 'constant', 'constant_with_warmup', 'inverse_sqrt', 'reduce_lr_on_plateau']
-    num_warmup_steps=24000, #32000,
+    num_warmup_steps=32000, #32000,
     learning_rate=1e-3, #0.005,
     weight_decay=0.01,
     adam_beta1=0.9,
@@ -103,9 +103,10 @@ argsDict = dict(
 
     logging_steps=1,
     saving_steps=1000,
+    saving_epochs=10,
     gradient_checkpointing=True,
     mask_time_prob=0.65,
-    mask_time_length=10,
+    mask_time_length=6,
 
     preprocessing_num_workers=None,
     validation_split_percentage=1,
@@ -118,7 +119,6 @@ argsDict = dict(
     cache_dir=None,
     preprocessing_only=None,
     push_to_hub = False,
-    
     )
 args=namedtuple('args',argsDict)
 args=args(**argsDict)
@@ -290,6 +290,9 @@ if not config.do_stable_layer_norm or config.feat_extract_norm != "layer":
 
 # initialize random model
 model = Wav2Vec2ForPreTraining(config)
+# model = Wav2Vec2ForPreTraining.from_pretrained(args.output_dir)
+# model = model.cuda()
+
 
 # Activate gradient checkpointing if needed
 if args.gradient_checkpointing:
@@ -307,6 +310,7 @@ data_collator = DataCollatorForWav2Vec2Pretraining(
     mask_time_prob=mask_time_prob,
     mask_time_length=mask_time_length,
 )
+
 """
 train_dataloader = DataLoader(
     vectorized_datasets["train"],
@@ -318,7 +322,7 @@ eval_dataloader = DataLoader(
     vectorized_datasets["validation"], collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
 )
 """
-keys_to_remove = ('mouse_id','ophys_exp_id')
+keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
 vec_dset_train = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_train))
 vec_dset_val = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_val))
 
@@ -398,6 +402,7 @@ dloss_train = []
 dloss_val = []
 gnorm = []
 lr_train = []
+ppl_train = []
 
 for epoch in range(starting_epoch, args.num_train_epochs):
     gc.collect()
@@ -507,6 +512,7 @@ for epoch in range(starting_epoch, args.num_train_epochs):
             dloss_train.append(train_logs['div_loss'].detach().cpu())
             gnorm.append(train_logs['grad_norm'].detach().cpu())
             lr_train.append(train_logs['lr'].detach().cpu())
+            ppl_train.append(train_logs['ppl'].detach().cpu())
 
             log_str = ""
             for k, v in train_logs.items():
@@ -585,15 +591,18 @@ for epoch in range(starting_epoch, args.num_train_epochs):
         if is_wandb_available():
             wandb.log(val_logs)
 
-    if args.output_dir is not None:
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(
-            args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
-        )
-        if accelerator.is_main_process:
-            if args.push_to_hub:
-                repo.push_to_hub(commit_message="End of training", auto_lfs_prune=True)
+    # save model every `args.saving_epochs` epochs
+    if (epoch+1) % args.saving_epochs == 0:
+        cp_file = args.output_dir+'cpt_'+str(epoch+1)
+        if args.output_dir is not None:
+            accelerator.wait_for_everyone()
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.save_pretrained(
+                cp_file, is_main_process=accelerator.is_main_process, save_function=accelerator.save
+            )
+            if accelerator.is_main_process:
+                if args.push_to_hub:
+                    repo.push_to_hub(commit_message="End of training", auto_lfs_prune=True)
     
     
     elapsed_time_epoch = time.time()-start_time_epoch
@@ -603,6 +612,7 @@ tloss_train = np.array(tloss_train)
 closs_train = np.array(closs_train)
 dloss_train = np.array(dloss_train)
 lr_train = np.array(lr_train)
+ppl_train = np.array(ppl_train)
 gnorm = np.array(gnorm)
 closs_val = np.array(closs_val)
 dloss_val = np.array(dloss_val)
@@ -612,7 +622,7 @@ tloss_val = np.array(tloss_val)
 import csv
 fname_saveLosses = os.path.join(args.output_dir,'model_losses.csv')
 
-header = ['train_tloss','train_closs','train_dloss','lr','gnorm','val_tloss','val_closs','val_dloss']
+header = ['train_tloss','train_closs','train_dloss','ppl_train','lr','gnorm','val_tloss','val_closs','val_dloss']
 tloss_val_csv = np.empty(tloss_train.shape[0]);tloss_val_csv[:]=np.nan
 tloss_val_csv[:tloss_val.shape[0]] = tloss_val
 closs_val_csv = np.empty(closs_train.shape[0]);closs_val_csv[:]=np.nan
@@ -620,7 +630,7 @@ closs_val_csv[:closs_val.shape[0]] = closs_val
 dloss_val_csv = np.empty(dloss_train.shape[0]);dloss_val_csv[:]=np.nan
 dloss_val_csv[:dloss_val.shape[0]] = dloss_val
 
-csv_data = np.concatenate((tloss_train[:,None],closs_train[:,None],dloss_train[:,None],lr_train[:,None],gnorm[:,None],tloss_val_csv[:,None],closs_val_csv[:,None],dloss_val_csv[:,None]),axis=1)
+csv_data = np.concatenate((tloss_train[:,None],closs_train[:,None],dloss_train[:,None],ppl_train[:,None],lr_train[:,None],gnorm[:,None],tloss_val_csv[:,None],closs_val_csv[:,None],dloss_val_csv[:,None]),axis=1)
        
 with open(fname_saveLosses,'w',newline='',encoding='utf-8') as csvfile:
     csvwriter = csv.writer(csvfile) 
@@ -667,16 +677,302 @@ tloss_val = np.array(closs_val) + (config.diversity_loss_weight * np.array(dloss
 
 xaxis_val = np.linspace(0,tloss_train.shape[0],num=tloss_val.shape[0])
 
+idx_toplot = np.arange(0,tloss_train.shape[0])  # tloss_train.shape[0]
+
 fontsize=12
 fig,axs = plt.subplots(2,3,figsize=(20,10));axs=np.ravel(axs)
-axs[0].plot(tloss_train,label='train');axs[0].plot(xaxis_val,tloss_val,label='val');axs[0].set_xlabel('Steps');axs[0].set_title('Total loss');axs[0].legend()
-axs[1].plot(closs_train,label='train');axs[1].plot(xaxis_val,closs_val,label='val');axs[1].set_xlabel('Steps');axs[1].set_title('contrastive loss');axs[0].legend()
-axs[2].plot(dloss_train,label='train');axs[2].plot(xaxis_val,dloss_val,label='val');axs[2].set_xlabel('Steps');axs[2].set_title('diversity loss');axs[0].legend()
-axs[3].plot(lr_train);axs[3].set_xlabel('Steps');axs[3].set_title('lr')
-axs[4].plot(gnorm);axs[4].set_xlabel('Steps');axs[4].set_title('gradient norm')
+axs[0].plot(tloss_train[idx_toplot],label='train');axs[0].plot(xaxis_val,tloss_val,label='val');axs[0].set_xlabel('Steps');axs[0].set_title('Total loss');axs[0].legend()
+axs[1].plot(closs_train[idx_toplot],label='train');axs[1].plot(xaxis_val,closs_val,label='val');axs[1].set_xlabel('Steps');axs[1].set_title('contrastive loss');axs[0].legend()
+axs[2].plot(dloss_train[idx_toplot],label='train');axs[2].plot(xaxis_val,dloss_val,label='val');axs[2].set_xlabel('Steps');axs[2].set_title('diversity loss');axs[0].legend()
+axs[3].plot(lr_train[idx_toplot]);axs[3].set_xlabel('Steps');axs[3].set_title('lr')
+axs[4].plot(gnorm[idx_toplot]);axs[4].set_xlabel('Steps');axs[4].set_title('gradient norm')
+axs[5].plot(ppl_train[idx_toplot]);axs[5].set_xlabel('Steps');axs[5].set_title('Perplexity')
+
+
+# %% Context vectors test: SVM
+from sklearn import svm
+import seaborn as sbn
+
+
+# model = Wav2Vec2ForPreTraining(config)
+mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-2/'
+model = Wav2Vec2ForPreTraining.from_pretrained(mdl_dir)
+model = model.cuda()
+
+
+keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
+
+vec_dset_svmtrain = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtrain))
+dataloader_svmtrain = DataLoader(vec_dset_svmtrain, collate_fn=data_collator, batch_size=32)
+
+vec_dset_svmtest1 = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtest1))
+dataloader_svmtest1 = DataLoader(vec_dset_svmtest1, collate_fn=data_collator, batch_size=32)
+
+vec_dset_svmtest2 = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtest2))
+dataloader_svmtest2 = DataLoader(vec_dset_svmtest2, collate_fn=data_collator, batch_size=32)
+
+vec_dset_noise = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_noisemovie))
+dataloader_noise = DataLoader(vec_dset_noise, collate_fn=data_collator, batch_size=32)
+
+score1_stim_loop = []
+score1_nonstim_loop = []
+score1_total_loop = []
+score2_stim_loop = []
+score2_nonstim_loop = []
+score2_total_loop = []
+score_noiseAsStim_loop = []
+score_noiseAsNonstim_loop = []
+
+n_loops = 10
+
+for i in range(n_loops):
+    print('Loop %d'%i)
+    cv_svmtrain_all = np.zeros((0,24,768))
+    model.eval()
+    for step, batch in enumerate(dataloader_svmtrain):
+        with torch.no_grad():
+            torch.cuda.empty_cache()
+            batch=batch.to(device='cuda')
+            batch.pop("sub_attention_mask", None)
+            outputs = model(**batch)
+            rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+            cv_svmtrain_all = np.concatenate((cv_svmtrain_all,rgb),axis=0)
+            
+            
+    cv_svmtest1_all = np.zeros((0,24,768))
+    # model.eval()
+    for step, batch in enumerate(dataloader_svmtest1):
+        with torch.no_grad():
+            torch.cuda.empty_cache()
+            batch=batch.to(device='cuda')
+            batch.pop("sub_attention_mask", None)
+            outputs = model(**batch)
+            rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+            cv_svmtest1_all = np.concatenate((cv_svmtest1_all,rgb),axis=0)
+    
+    
+    cv_svmtest2_all = np.zeros((0,24,768))
+    # model.eval()
+    for step, batch in enumerate(dataloader_svmtest2):
+        with torch.no_grad():
+            torch.cuda.empty_cache()
+            batch=batch.to(device='cuda')
+            batch.pop("sub_attention_mask", None)
+            outputs = model(**batch)
+            rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+            cv_svmtest2_all = np.concatenate((cv_svmtest2_all,rgb),axis=0)
+    
+    cv_noise_all = np.zeros((0,24,768))
+    # model.eval()
+    for step, batch in enumerate(dataloader_noise):
+        with torch.no_grad():
+            torch.cuda.empty_cache()
+            batch=batch.to(device='cuda')
+            batch.pop("sub_attention_mask", None)
+            outputs = model(**batch)
+            rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+            cv_noise_all = np.concatenate((cv_noise_all,rgb),axis=0)
+
+    
+    idx_entry = -1
+    cv_svmtrain = cv_svmtrain_all[:,idx_entry,:]
+    cv_svmtest1 = cv_svmtest1_all[:,idx_entry,:]
+    cv_svmtest2 = cv_svmtest2_all[:,idx_entry,:]
+    cv_noise = cv_noise_all[:,idx_entry,:]
+    
+    # cv_svmtrain = cv_svmtrain_all.reshape(-1,cv_svmtrain_all.shape[1]*cv_svmtrain_all.shape[2])
+    # cv_svmtest1 = cv_svmtest1_all.reshape(-1,cv_svmtest1_all.shape[1]*cv_svmtest1_all.shape[2])
+    # cv_svmtest2 = cv_svmtest2_all.reshape(-1,cv_svmtest2_all.shape[1]*cv_svmtest2_all.shape[2])
+    # cv_noise = cv_noise_all.reshape(-1,cv_noise_all.shape[1]*cv_noise_all.shape[2])
+    
+    cv_svmtrain_norm = (cv_svmtrain-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
+    cv_svmtest1_norm = (cv_svmtest1-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
+    cv_svmtest2_norm = (cv_svmtest2-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
+    cv_noise_norm = (cv_noise-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
+    
+    clf = svm.SVC()
+    svm_fit = clf.fit(cv_svmtrain_norm, labels_svmtrain)
+    print(svm_fit.score(cv_svmtrain_norm, labels_svmtrain))
+    
+    labels_svmtest1_predict = svm_fit.predict(cv_svmtest1_norm)
+    score1_stim = (labels_svmtest1_predict[labels_svmtest1!=0] == labels_svmtest1[labels_svmtest1!=0]).sum()/len(labels_svmtest1[labels_svmtest1!=0])
+    score1_nonstim = (labels_svmtest1_predict[labels_svmtest1==0] == labels_svmtest1[labels_svmtest1==0]).sum()/len(labels_svmtest1[labels_svmtest1==0])
+    score1_total = (labels_svmtest1_predict == labels_svmtest1).sum()/len(labels_svmtest1)
+    print('Test Set 1 Accuracy - Stim: %0.2f | NonStim: %0.2f | Total: %0.2f' %(score1_stim,score1_nonstim,score1_total))
+    
+    labels_svmtest2_predict = svm_fit.predict(cv_svmtest2_norm)
+    score2_stim = (labels_svmtest2_predict[labels_svmtest2!=0] == labels_svmtest2[labels_svmtest2!=0]).sum()/len(labels_svmtest2[labels_svmtest2!=0])
+    score2_nonstim = (labels_svmtest2_predict[labels_svmtest2==0] == labels_svmtest2[labels_svmtest2==0]).sum()/len(labels_svmtest2[labels_svmtest2==0])
+    score2_total = (labels_svmtest2_predict == labels_svmtest2).sum()/len(labels_svmtest2)
+    print('Test Set 2 Accuracy - Stim: %0.2f | NonStim: %0.2f | Total: %0.2f' %(score2_stim,score2_nonstim,score2_total))
+    
+    
+    score1_stim_loop.append(score1_stim)
+    score1_nonstim_loop.append(score1_nonstim)
+    score1_total_loop.append(score1_total)
+    score2_stim_loop.append(score2_stim)
+    score2_nonstim_loop.append(score2_nonstim)
+    score2_total_loop.append(score2_total)
+
+    
+    labels_noise_predict = svm_fit.predict(cv_noise_norm)
+    score2_noise_stim = (labels_noise_predict == 1).sum()/len(labels_noisemovie)
+    score2_noise_nonstim = (labels_noise_predict == 0).sum()/len(labels_noisemovie)
+    print('Noise - Classified as stim: %0.2f | Classified as nonstim %0.2f' %(score2_noise_stim,score2_noise_nonstim))
+
+    score_noiseAsStim_loop.append(score2_noise_stim)
+    score_noiseAsNonstim_loop.append(score2_noise_nonstim)
+    
+# 
+
+fig,axs=plt.subplots(1,1,figsize=(10,5));axs=np.ravel(axs)
+scores = [score1_stim_loop,score1_nonstim_loop,score1_total_loop,score2_stim_loop,score2_nonstim_loop,score2_total_loop,score_noiseAsStim_loop,score_noiseAsNonstim_loop]
+labels_scores = ['stim 1','nonstim 1','total 1','stim 2','nonstim 2','total 2','noiseAsStim','noiseAsNontim']
+axs[0].boxplot(scores,labels=labels_scores);axs[0].set_ylim([0,1.1])
+axs[0].set_yticks(np.arange(0,1.1,.1))
+axs[0].grid(axis='y',color=[.7,.7,.7],linestyle='--')
+
+# %%
+
+mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-3/'
+model = Wav2Vec2ForPreTraining.from_pretrained(mdl_dir)
+
+# %% Recycle bin
+"""        
+# % Model testing: stim vs non-stim
+
+keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
+vec_dset_stim = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_stim))
+vec_dset_nonstim = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_nonstim))
+
+
+n_samps = 64
+stim_dataloader = DataLoader(vec_dset_stim[:n_samps], collate_fn=data_collator, batch_size=8)
+nonstim_dataloader = DataLoader(vec_dset_nonstim[:n_samps], collate_fn=data_collator, batch_size=8)
+
+cv_stim = np.zeros((0,24,768))
+cv_nonstim = np.zeros((0,24,768))
+
+model.eval()
+for step, batch in enumerate(stim_dataloader):
+    with torch.no_grad():
+        torch.cuda.empty_cache()
+        batch=batch.to(device='cuda')
+        batch.pop("sub_attention_mask", None)
+        outputs = model(**batch)
+        rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+        cv_stim = np.concatenate((cv_stim,rgb),axis=0)
+
+for step, batch in enumerate(nonstim_dataloader):
+    with torch.no_grad():
+        torch.cuda.empty_cache()
+        batch=batch.to(device='cuda')
+        batch.pop("sub_attention_mask", None)
+        outputs = model(**batch)
+        rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+        cv_nonstim = np.concatenate((cv_nonstim,rgb),axis=0)
+
+idx_entry = 23
+
+cv_stim = cv_stim.reshape(-1,cv_stim.shape[1]*cv_stim.shape[2])
+cv_nonstim = cv_nonstim.reshape(-1,cv_nonstim.shape[1]*cv_nonstim.shape[2])
+
+# cv_stim = cv_stim[:,idx_entry,:]
+# cv_nonstim = cv_nonstim[:,idx_entry,:]
+
+mag_cv_stim = np.sum(cv_stim**2,axis=-1)
+mag_cv_nonstim = np.sum(cv_nonstim**2,axis=-1)
+
+
+sim_stim_stim = np.zeros((cv_stim.shape[0],cv_stim.shape[0]));sim_stim_stim[:]=np.nan
+sim_nonstim_nonstim = np.zeros((cv_nonstim.shape[0],cv_nonstim.shape[0]));sim_nonstim_nonstim[:]=np.nan
+sim_stim_nonstim = np.zeros((cv_stim.shape[0],cv_nonstim.shape[0]));sim_stim_nonstim[:]=np.nan
+
+for i in range(cv_stim.shape[0]):
+    for j in range(cv_stim.shape[0]):
+        if i!=j:
+            sim_stim_stim[i,j] = np.dot(cv_stim[i,:],cv_stim[j,:])/(np.linalg.norm(cv_stim[i,:])*np.linalg.norm(cv_stim[j,:]))
+            sim_nonstim_nonstim[i,j] = np.dot(cv_nonstim[i,:],cv_nonstim[j,:])/(np.linalg.norm(cv_nonstim[i,:])*np.linalg.norm(cv_nonstim[j,:]))
+            sim_stim_nonstim[i,j] = np.dot(cv_stim[i,:],cv_nonstim[j,:])/(np.linalg.norm(cv_stim[i,:])*np.linalg.norm(cv_nonstim[j,:]))
+    
+
+plt.hist(sim_stim_stim.flatten());plt.title('stim-stim');plt.show()
+plt.hist(sim_nonstim_nonstim.flatten());plt.title('nonstim-nonstim');plt.show()
+plt.hist(sim_stim_nonstim.flatten());plt.title('stim-nonstim');plt.show()
 
 
 
+# cv_test = cv_test.reshape(-1,cv_test.shape[1]*cv_test.shape[2])
+
+
+# % Model testing: pca
+from sklearn.decomposition import PCA
+keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
+vec_dset_test = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_train))
+
+
+n_samps = len(vec_dset_test)
+test_dataloader = DataLoader(vec_dset_test[:n_samps], collate_fn=data_collator, batch_size=8)
+
+cv_test_all = np.zeros((0,24,256))
+
+model.eval()
+for step, batch in enumerate(test_dataloader):
+    with torch.no_grad():
+        torch.cuda.empty_cache()
+        batch=batch.to(device='cuda')
+        batch.pop("sub_attention_mask", None)
+        outputs = model(**batch)
+        # rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+        rgb = outputs['projected_states'].detach().cpu().numpy()
+        cv_test_all = np.concatenate((cv_test_all,rgb),axis=0)
+
+cv_test = cv_test_all[:,-1,:]
+# cv_test = cv_test_all.reshape(-1,cv_test_all.shape[1]*cv_test_all.shape[2])
+# cv_test = cv_test.T
+
+
+cv_test_norm = (cv_test-np.mean(cv_test,axis=0)[None,:])/np.std(cv_test,axis=0)[None,:]
+
+# cv_test = cv_test[:,-1,:]
+
+a = PCA(2)
+pca_test = a.fit_transform(cv_test_norm)
+pca_test.shape
+
+plt.plot(pca_test[:,0],pca_test[:,1],'.')
+plt.plot(pca_test[1000:,0],pca_test[1000:,1],'.')
+plt.show()
+
+
+
+stiminfo_stacked = []
+i=0
+for i in range(len(dset_train)):
+    a = dset_train[i]['stiminfo']
+    a = list(a[:-1])
+    # stiminfo_stacked = stiminfo_stacked + a
+    stiminfo_stacked.append(a)
+
+stiminfo_stacked = np.asarray(stiminfo_stacked)
+
+idx_check = pca_test[:,0]>5
+stim_check = stiminfo_test[idx_check]
+
+(stim_check=='im005_r').sum()
+(stim_check=='im012_r').sum()
+(stim_check=='im024_r').sum()
+(stim_check=='0').sum()
+
+
+np.where(idx_check)[0]
+b = dset_test[728]['stiminfo']
+
+# dset_new = []
+# for i in a:
+#     dset_new.append(dset_test[i])
+
+"""
 # %% [old] Dataset
 # We load all dataset configuration and datset split pairs passed in
 # ``args.dataset_config_names`` and ``args.dataset_split_names``
