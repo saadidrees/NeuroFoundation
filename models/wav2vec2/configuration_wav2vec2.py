@@ -226,7 +226,7 @@ class Wav2Vec2Config(PretrainedConfig):
         dim_inputSpat = 128,
         conv_dim=(16,16,32,64), #(512, 512, 512, 512, 512, 512, 512),
         conv_stride=(1,1,1,1),#(5, 2, 2, 2, 2, 2, 2),
-        conv_kernel=(5,5,1,1), #(10, 3, 3, 3, 3, 2, 2),
+        conv_kernel=(5,5,1,1), #(5,5,1,1) #(10, 3, 3, 3, 3, 2, 2),
         conv_kernel_spatial = [3,3,3,2],
         conv_stride_spatial = [2,2,2,1], #3
         maxpool_kernel_spatial = [3,2,1,1],
