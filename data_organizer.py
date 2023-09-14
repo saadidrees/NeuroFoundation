@@ -45,6 +45,8 @@ import re
 from allensdk.brain_observatory.behavior.behavior_project_cache import VisualBehaviorOphysProjectCache
 
 from data_handler import dataExtractor
+from data_handler import utils
+
 
 
 output_dir = "/home/saad/data/analyses/allen/raw/"
@@ -93,6 +95,7 @@ else:
 # ---- Initialize empty lists for final data
 dff_grand = []                  # [experiments][time,units]
 dff_mov_grand = []              # [experiments][rows,cols,time] <-- movie
+dff_mov_norm_grand = []
 dff_mov_grand_metadata = []     # [experiments][timestamps,stim] <-- this contains the stimulus name that was shown at each timestamp. 0 indicates no stimulus
 ts_grand = []                   # [experiments][timestamps] <--- corresponds to time axis in above variables
 total_cells = 0
@@ -171,6 +174,7 @@ for select_container in containerIds_nmice:
         dataDict = dataExtractor.get_dataDict(dataset,cell_id_toExtract,initial_time,final_time)     # makes a dictionary containing dff, licks, pupil etc etc for this experiment
         
         dff = dataDict['dff'].data                  # calcium signal [time,units]
+        dff_norm = (dff - (np.mean(dff,axis=0)[None,:])) / (np.std(dff,axis=0)[None,:])
         ts = dataDict['dff'].timestamps.values      # timestamps corresponding to dff
         rois = dataDict['rois']                     # rois for each unit [y,x,units]
         
@@ -183,7 +187,7 @@ for select_container in containerIds_nmice:
             ts_selectedStim = np.array(dataDict['stim_pres'].loc[idx_selectedStim,['start_time','end_time']])
             
             a = np.diff(ts_selectedStim,axis=0)
-            thresh_gaps = 20#20    # seconds
+            thresh_gaps = 0#20    # seconds
             b = np.where(a[:,0]>thresh_gaps)[0]
             c_start = np.concatenate((np.array([0]),b+1))
             c_end = np.concatenate((np.array([0]),b))
@@ -196,17 +200,21 @@ for select_container in containerIds_nmice:
     
                 
         roi_movie = np.zeros((rois.shape[0],rois.shape[1],dff.shape[0]))
+        roi_movie_norm = np.zeros((rois.shape[0],rois.shape[1],dff.shape[0]))
         
         i=0
         for i in range(dff.shape[-1]):  # loop over num of cells
             idx = np.where(rois[:,:,i])
             roi_movie[idx[0],idx[1],:] = dff[:,i]
+            roi_movie_norm[idx[0],idx[1],:] = dff_norm[:,i]
+            
         
         df_movie_meta = pd.DataFrame(ts,columns=['timestamps'])
         df_movie_meta['stim'] = stimLabel_dff
         
         dff_grand.append(dff)                     # [[experiments]][time,units]
         dff_mov_grand.append(roi_movie)           # [[experiments]][y,x,time]
+        dff_mov_norm_grand.append(roi_movie_norm)           # [[experiments]][y,x,time]
         dff_mov_grand_metadata.append(df_movie_meta) # [[experiments]]
         ts_grand.append([ts])                       # [[experiments]][time]
         ophys_exp_id_grand.append(ophys_exp_id)
@@ -219,7 +227,6 @@ for select_container in containerIds_nmice:
 The sampling rate is 11 Hz. So interval time of ~91 ms. If i take 1000 samples in a sequence
 then it will be 91 s per sequence. Which I think is fine. 
 """
-from data_handler import utils
 
 
 unique_stimuli = np.zeros((0),dtype='object')
@@ -239,13 +246,16 @@ nframes_val = 500
 
 downscale_fac = 4
 context_len = 32 #32
+DO_NORMALIZE = False
 
 dset_train = []
 dset_val = []
 
+
 i=0
 for i in range(len(dff_mov_grand)):
-    mov = dff_mov_grand[i]
+    # mov = dff_mov_grand[i]
+    mov = dff_mov_norm_grand[i]
     mov = mov[::downscale_fac,::downscale_fac,:]
     mov = np.moveaxis(mov,-1,0)
     
@@ -266,15 +276,474 @@ for i in range(len(dff_mov_grand)):
 
     dict_metadata = dict(mouse_id=mouse_id_grand[i],
                          ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo_train)
-    temp = utils.chunker(mov_train,context_len,dict_metadata=dict_metadata)
+    temp = utils.chunker(mov_train,context_len,dict_metadata=dict_metadata,DO_NORMALIZE=DO_NORMALIZE)
     dset_train = dset_train+temp
     
     dict_metadata = dict(mouse_id=mouse_id_grand[i],
                          ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo_val)
-    temp = utils.chunker(mov_val,context_len,dict_metadata=dict_metadata)
+    temp = utils.chunker(mov_val,context_len,dict_metadata=dict_metadata,DO_NORMALIZE=DO_NORMALIZE)
     dset_val = dset_val+temp
 
 
+
+# %% Context vector test - controlled sequences
+
+unique_stimuli = np.zeros((0),dtype='object')
+i=0
+for i in range(len(dff_mov_grand_metadata)):
+    rgb = np.array(dff_mov_grand_metadata[i].stim.unique())
+    unique_stimuli = np.concatenate((unique_stimuli,rgb),axis=0)
+unique_stimuli[unique_stimuli==0]='0'
+unique_stimuli = np.unique(unique_stimuli)
+print(unique_stimuli)
+
+#(0, 'im005_r','im012_r','im024_r','im034_r','im036_r','im044_r','im047_r','im078_r','im083_r',
+# 'im087_r','im104_r','im111_r','im114_r','im115_r','omitted')
+
+keys_stim1 = ('im005_r','im012_r','im024_r','im034_r','im036_r','im047_r','im078_r','im083_r','im087_r', 'im104_r','im111_r', 'im114_r')
+keys_stim2 = ('im044_r','im115_r')
+keys_nonstim = (0,)
+
+dset_stim1 = []
+dset_stim2 = []
+dset_nonstim = []
+dset_nonstim_test = []
+
+
+mov_range = 7#len(dff_mov_grand)
+i=0
+for i in range(mov_range):
+    print('mov %d of %d'%(i+1,mov_range))
+    mov = dff_mov_grand[i]
+    mov = mov[::downscale_fac,::downscale_fac,:]
+    mov = np.moveaxis(mov,-1,0)
+
+    j=0
+    for j in range(len(keys_stim1)):
+        rgb = np.array(dff_mov_grand_metadata[i].stim == keys_stim1[j])
+        a = np.where(rgb)[0]
+        b = np.diff(a)
+        c = np.where(b>1)[0]
+        
+        k=0
+        t = time.time()
+        for k in range(0,len(c)):
+            idx = a[c[k]]
+            idx_chunk = np.arange(idx-context_len+1,idx+1,dtype='int')
+            mov_chunk = mov[idx_chunk]
+            
+            stiminfo = dff_mov_grand_metadata[i].stim.iloc[idx_chunk]
+            dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                                  ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo)
+            temp = utils.chunker(mov_chunk,context_len,dict_metadata=dict_metadata,truncate=False)
+            dset_stim1 = dset_stim1+temp
+
+        
+    j=0
+    for j in range(len(keys_stim2)):
+        rgb = np.array(dff_mov_grand_metadata[i].stim == keys_stim2[j])
+        a = np.where(rgb)[0]
+        b = np.diff(a)
+        c = np.where(b>1)[0]
+        
+        k=0
+        t = time.time()
+        for k in range(0,len(c)):
+            idx = a[c[k]]
+            idx_chunk = np.arange(idx-context_len+1,idx+1,dtype='int')
+            mov_chunk = mov[idx_chunk]
+            
+            stiminfo = dff_mov_grand_metadata[i].stim.iloc[idx_chunk]
+            dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                                  ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo)
+            temp = utils.chunker(mov_chunk,context_len,dict_metadata=dict_metadata,truncate=False)
+            dset_stim2 = dset_stim2+temp
+
+    
+    j=0
+    for j in range(len(keys_nonstim)):
+        rgb = np.array(dff_mov_grand_metadata[i].stim == keys_nonstim[j])
+        a = np.where(rgb)[0]
+        b = np.diff(a)
+        c = np.where(b>1)[0]
+        
+        idx_nonstim = a[:c[0]+1]
+        idx_nonstim = np.hstack((idx_nonstim,a[c[-1]+5:]))
+        
+        idx_nonstim_test = idx_nonstim[idx_nonstim<nframes_val]
+        idx_nonstim = np.setdiff1d(idx_nonstim,idx_nonstim_test)
+        
+        
+    mov_nonstim = mov[idx_nonstim]
+    mov_nonstim_test = mov[idx_nonstim_test]
+    
+    stiminfo_nonstim = dff_mov_grand_metadata[i].stim.iloc[idx_nonstim]
+    stiminfo_nonstim_test = dff_mov_grand_metadata[i].stim.iloc[idx_nonstim_test]
+
+
+    dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                         ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo_nonstim)
+    temp = utils.chunker(mov_nonstim,context_len,dict_metadata=dict_metadata)
+    dset_nonstim = dset_nonstim+temp
+
+    dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                         ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo_nonstim_test)
+    temp = utils.chunker(mov_nonstim_test,context_len,dict_metadata=dict_metadata)
+    dset_nonstim_test = dset_nonstim_test+temp
+    
+        
+stiminfo_stim1 = []
+stiminfo_stim1_fullseq = []
+stiminfo_stim2 = []
+stiminfo_nonstim = []
+stiminfo_nonstim_test = []
+
+names_allstims = np.unique(keys_stim1+keys_stim2)
+label_ids_allstims = np.arange(0,len(names_allstims),dtype='int')+1
+
+labels_stim1 = np.zeros(0,dtype='int')
+i=0
+idx_topop = []
+for i in range(len(dset_stim1)):
+    a = dset_stim1[i]['stiminfo']
+    a = list(a)
+    a = np.unique(a)
+    if len(a)>2:
+        idx_topop.append(i)
+    else:
+        a = a[-1:].tolist()
+        _,rgb,_ = np.intersect1d(names_allstims,a,return_indices=True)
+        labels_stim1 = np.hstack((labels_stim1,label_ids_allstims[rgb.astype('int')]))
+        stiminfo_stim1.append(a)
+        stiminfo_stim1_fullseq = stiminfo_stim1_fullseq+[list(dset_stim1[i]['stiminfo'])]
+        
+for i in range(len(idx_topop)):
+    dset_stim1.pop(i)
+    
+    
+labels_stim2 = np.zeros(0,dtype='int')
+i=0
+idx_topop = []
+for i in range(len(dset_stim2)):
+    a = dset_stim2[i]['stiminfo']
+    a = list(a)
+    a = np.unique(a)
+    if len(a)>2:
+        idx_topop.append(i)
+    else:
+        a = a[-1:].tolist()
+        _,rgb,_ = np.intersect1d(names_allstims,a,return_indices=True)
+        labels_stim2 = np.hstack((labels_stim2,label_ids_allstims[rgb.astype('int')]))
+        stiminfo_stim2.append(a)
+        
+for i in range(len(idx_topop)):
+    dset_stim2.pop(i)
+
+    
+    
+i=0
+for i in range(len(dset_nonstim)):
+    a = dset_nonstim[i]['stiminfo']
+    a = list(a[-1:])
+    stiminfo_nonstim.append(a)
+
+
+i=0
+for i in range(len(dset_nonstim_test)):
+    a = dset_nonstim_test[i]['stiminfo']
+    a = list(a[-1:])
+    stiminfo_nonstim_test.append(a)
+
+
+
+nsamps_svmtrain = 1750
+nsamps_svmtrain_nonstim = nsamps_svmtrain#int(nsamps_svmtrain/len(np.unique(stiminfo_stim1)))
+nsamps_svmtest = 80
+nsamps_svmtest1_nonstim = nsamps_svmtest#int(nsamps_svmtest/len(np.unique(stiminfo_stim1)))
+nsamps_svmtest2_nonstim = nsamps_svmtest #int(nsamps_svmtest/len(np.unique(stiminfo_stim2)))
+
+assert nsamps_svmtrain < len(labels_stim1)
+assert nsamps_svmtest < len(stiminfo_stim2)
+# assert nsamps_svmtrain_nonstim<len(dset_nonstim)
+
+if nsamps_svmtrain_nonstim>len(dset_nonstim):
+    nsamps_svmtrain_nonstim = len(dset_nonstim) - nsamps_svmtest-5
+
+
+idx_svmtrain = np.random.randint(0,len(dset_stim1),nsamps_svmtrain)
+rgb = np.setdiff1d(np.arange(len(dset_stim1)),idx_svmtrain)
+idx_svmtest = np.random.randint(0,len(rgb),nsamps_svmtest)
+idx_svmtest = rgb[idx_svmtest]
+
+dset_svmtrain=[]
+for i in range(nsamps_svmtrain):
+    dset_svmtrain = dset_svmtrain+dset_stim1[idx_svmtrain[i]:idx_svmtrain[i]+1]
+dset_svmtrain = dset_svmtrain + dset_nonstim[:nsamps_svmtrain_nonstim]
+labels_svmtrain = np.concatenate((labels_stim1[idx_svmtrain],np.zeros(nsamps_svmtrain_nonstim)))
+rgb = [stiminfo_stim1[a] for a in idx_svmtrain]
+rgb_fullseq = [stiminfo_stim1_fullseq[a] for a in idx_svmtrain]
+
+dset_svmtest1=[]
+for i in range(nsamps_svmtest):
+    dset_svmtest1 = dset_svmtest1+dset_stim1[idx_svmtest[i]:idx_svmtest[i]+1]
+dset_svmtest1 = dset_svmtest1+dset_nonstim_test[:nsamps_svmtest1_nonstim]
+labels_svmtest1 = np.concatenate((labels_stim1[idx_svmtest],np.zeros(nsamps_svmtest1_nonstim)))
+rgb_test = [stiminfo_stim1[a] for a in idx_svmtest]
+
+# dset_svmtrain = dset_stim1[:nsamps_svmtrain]+dset_nonstim[:nsamps_svmtrain]
+# labels_svmtrain = np.concatenate((labels_stim1[:nsamps_svmtrain],np.zeros(nsamps_svmtrain)))
+
+# dset_svmtest1 = dset_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest]
+# labels_svmtest1 = np.concatenate((labels_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest],np.zeros(nsamps_svmtest)))
+
+dset_svmtest2 = dset_stim2[:nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest2_nonstim]
+labels_svmtest2 = np.concatenate((labels_stim2[:nsamps_svmtest],np.zeros(nsamps_svmtest2_nonstim)))
+
+labels_svmtrain[labels_svmtrain>0]=1
+labels_svmtest1[labels_svmtest1>0]=1
+labels_svmtest2[labels_svmtest2>0]=1
+
+
+dset_noisemovie = []
+nsamps_noisemovie = 50
+val_min = mov.min()
+val_max = mov.max()
+
+# for i in range(nsamps_noisemovie):
+rgb = np.random.uniform(val_min,val_max,size=(32*nsamps_noisemovie,mov.shape[1],mov.shape[2]))
+dset_noisemovie = utils.chunker(rgb,context_len,dict_metadata=None)   
+labels_noisemovie = np.ones(len(dset_noisemovie))
+
+# %% Context vector test - timing
+
+unique_stimuli = np.zeros((0),dtype='object')
+i=0
+for i in range(len(dff_mov_grand_metadata)):
+    rgb = np.array(dff_mov_grand_metadata[i].stim.unique())
+    unique_stimuli = np.concatenate((unique_stimuli,rgb),axis=0)
+unique_stimuli[unique_stimuli==0]='0'
+unique_stimuli = np.unique(unique_stimuli)
+print(unique_stimuli)
+
+#(0, 'im005_r','im012_r','im024_r','im034_r','im036_r','im044_r','im047_r','im078_r','im083_r',
+# 'im087_r','im104_r','im111_r','im114_r','im115_r','omitted')
+
+keys_stim1 = ('im005_r','im012_r','im024_r','im034_r','im036_r','im047_r','im078_r','im083_r','im087_r', 'im104_r','im111_r', 'im114_r')
+keys_stim2 = ('im044_r','im115_r')
+keys_nonstim = (0,)
+
+dset_stim1 = []
+dset_stim2 = []
+dset_nonstim = []
+dset_nonstim_test = []
+
+
+mov_range = 7#len(dff_mov_grand)
+i=0
+for i in range(mov_range):
+    print('mov %d of %d'%(i+1,mov_range))
+    mov = dff_mov_grand[i]
+    mov = mov[::downscale_fac,::downscale_fac,:]
+    mov = np.moveaxis(mov,-1,0)
+
+    j=0
+    for j in range(len(keys_stim1)):
+        rgb = np.array(dff_mov_grand_metadata[i].stim == keys_stim1[j])
+        a = np.where(rgb)[0]
+        b = np.diff(a)
+        c = np.where(b>1)[0]
+        
+        k=0
+        t = time.time()
+        for k in range(0,len(c)):
+            idx = a[c[k]]
+            idx_chunk = np.arange(idx-context_len+1,idx+1,dtype='int')
+            mov_chunk = mov[idx_chunk]
+            
+            stiminfo = dff_mov_grand_metadata[i].stim.iloc[idx_chunk]
+            dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                                  ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo)
+            temp = utils.chunker(mov_chunk,context_len,dict_metadata=dict_metadata,truncate=False)
+            dset_stim1 = dset_stim1+temp
+
+        
+    j=0
+    for j in range(len(keys_stim2)):
+        rgb = np.array(dff_mov_grand_metadata[i].stim == keys_stim2[j])
+        a = np.where(rgb)[0]
+        b = np.diff(a)
+        c = np.where(b>1)[0]
+        
+        k=0
+        t = time.time()
+        for k in range(0,len(c)):
+            idx = a[c[k]]
+            idx_chunk = np.arange(idx-context_len+1,idx+1,dtype='int')
+            mov_chunk = mov[idx_chunk]
+            
+            stiminfo = dff_mov_grand_metadata[i].stim.iloc[idx_chunk]
+            dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                                  ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo)
+            temp = utils.chunker(mov_chunk,context_len,dict_metadata=dict_metadata,truncate=False)
+            dset_stim2 = dset_stim2+temp
+
+    
+    j=0
+    for j in range(len(keys_nonstim)):
+        rgb = np.array(dff_mov_grand_metadata[i].stim == keys_nonstim[j])
+        a = np.where(rgb)[0]
+        b = np.diff(a)
+        c = np.where(b>1)[0]
+        
+        idx_nonstim = a[:c[0]+1]
+        idx_nonstim = np.hstack((idx_nonstim,a[c[-1]+5:]))
+        
+        idx_nonstim_test = idx_nonstim[idx_nonstim<nframes_val]
+        idx_nonstim = np.setdiff1d(idx_nonstim,idx_nonstim_test)
+        
+        
+    mov_nonstim = mov[idx_nonstim]
+    mov_nonstim_test = mov[idx_nonstim_test]
+    
+    stiminfo_nonstim = dff_mov_grand_metadata[i].stim.iloc[idx_nonstim]
+    stiminfo_nonstim_test = dff_mov_grand_metadata[i].stim.iloc[idx_nonstim_test]
+
+
+    dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                         ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo_nonstim)
+    temp = utils.chunker(mov_nonstim,context_len,dict_metadata=dict_metadata)
+    dset_nonstim = dset_nonstim+temp
+
+    dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                         ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo_nonstim_test)
+    temp = utils.chunker(mov_nonstim_test,context_len,dict_metadata=dict_metadata)
+    dset_nonstim_test = dset_nonstim_test+temp
+    
+    
+rgb = mov[:100,:,:].copy()
+rgb = (rgb-(np.mean(rgb,axis=(0))[None,:,:])) / (np.std(rgb,axis=(0))[None,:,:])
+plt.plot(mov[:50,61,6]);plt.plot(mov[:50,12,4]);plt.show()
+plt.plot(rgb[:50,61,6]);plt.plot(rgb[:50,12,4]);plt.show()
+# plt.plot(mov[:50,12,4]/mov[:,12,4].max());plt.plot(rgb[:50,12,4]/rgb[:,12,4].max());plt.show()
+        
+stiminfo_stim1 = []
+stiminfo_stim1_fullseq = []
+stiminfo_stim2 = []
+stiminfo_nonstim = []
+stiminfo_nonstim_test = []
+
+names_allstims = np.unique(keys_stim1+keys_stim2)
+label_ids_allstims = np.arange(0,len(names_allstims),dtype='int')+1
+
+labels_stim1 = np.zeros(0,dtype='int')
+i=0
+idx_topop = []
+for i in range(len(dset_stim1)):
+    a = dset_stim1[i]['stiminfo']
+    a = list(a)
+    a = np.unique(a)
+    if len(a)>2:
+        idx_topop.append(i)
+    else:
+        a = a[-1:].tolist()
+        _,rgb,_ = np.intersect1d(names_allstims,a,return_indices=True)
+        labels_stim1 = np.hstack((labels_stim1,label_ids_allstims[rgb.astype('int')]))
+        stiminfo_stim1.append(a)
+        stiminfo_stim1_fullseq = stiminfo_stim1_fullseq+[list(dset_stim1[i]['stiminfo'])]
+        
+for i in range(len(idx_topop)):
+    dset_stim1.pop(i)
+    
+    
+labels_stim2 = np.zeros(0,dtype='int')
+i=0
+idx_topop = []
+for i in range(len(dset_stim2)):
+    a = dset_stim2[i]['stiminfo']
+    a = list(a)
+    a = np.unique(a)
+    if len(a)>2:
+        idx_topop.append(i)
+    else:
+        a = a[-1:].tolist()
+        _,rgb,_ = np.intersect1d(names_allstims,a,return_indices=True)
+        labels_stim2 = np.hstack((labels_stim2,label_ids_allstims[rgb.astype('int')]))
+        stiminfo_stim2.append(a)
+        
+for i in range(len(idx_topop)):
+    dset_stim2.pop(i)
+
+    
+    
+i=0
+for i in range(len(dset_nonstim)):
+    a = dset_nonstim[i]['stiminfo']
+    a = list(a[-1:])
+    stiminfo_nonstim.append(a)
+
+
+i=0
+for i in range(len(dset_nonstim_test)):
+    a = dset_nonstim_test[i]['stiminfo']
+    a = list(a[-1:])
+    stiminfo_nonstim_test.append(a)
+
+
+
+nsamps_svmtrain = 1750
+nsamps_svmtrain_nonstim = nsamps_svmtrain #int(nsamps_svmtrain/len(np.unique(stiminfo_stim1)))
+nsamps_svmtest = 80
+nsamps_svmtest1_nonstim = nsamps_svmtest #int(nsamps_svmtest/len(np.unique(stiminfo_stim1)))
+nsamps_svmtest2_nonstim = nsamps_svmtest #int(nsamps_svmtest/len(np.unique(stiminfo_stim2)))
+
+assert nsamps_svmtrain < len(labels_stim1)
+assert nsamps_svmtest < len(stiminfo_stim2)
+assert nsamps_svmtrain_nonstim<len(dset_nonstim)
+
+
+idx_svmtrain = np.random.randint(0,len(dset_stim1),nsamps_svmtrain)
+rgb = np.setdiff1d(np.arange(len(dset_stim1)),idx_svmtrain)
+idx_svmtest = np.random.randint(0,len(rgb),nsamps_svmtest)
+idx_svmtest = rgb[idx_svmtest]
+
+dset_svmtrain=[]
+for i in range(nsamps_svmtrain):
+    dset_svmtrain = dset_svmtrain+dset_stim1[idx_svmtrain[i]:idx_svmtrain[i]+1]
+dset_svmtrain = dset_svmtrain + dset_nonstim[:nsamps_svmtrain_nonstim]
+labels_svmtrain = np.concatenate((labels_stim1[idx_svmtrain],np.zeros(nsamps_svmtrain_nonstim)))
+rgb = [stiminfo_stim1[a] for a in idx_svmtrain]
+rgb_fullseq = [stiminfo_stim1_fullseq[a] for a in idx_svmtrain]
+
+dset_svmtest1=[]
+for i in range(nsamps_svmtest):
+    dset_svmtest1 = dset_svmtest1+dset_stim1[idx_svmtest[i]:idx_svmtest[i]+1]
+dset_svmtest1 = dset_svmtest1+dset_nonstim_test[:nsamps_svmtest1_nonstim]
+labels_svmtest1 = np.concatenate((labels_stim1[idx_svmtest],np.zeros(nsamps_svmtest1_nonstim)))
+rgb_test = [stiminfo_stim1[a] for a in idx_svmtest]
+
+# dset_svmtrain = dset_stim1[:nsamps_svmtrain]+dset_nonstim[:nsamps_svmtrain]
+# labels_svmtrain = np.concatenate((labels_stim1[:nsamps_svmtrain],np.zeros(nsamps_svmtrain)))
+
+# dset_svmtest1 = dset_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest]
+# labels_svmtest1 = np.concatenate((labels_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest],np.zeros(nsamps_svmtest)))
+
+dset_svmtest2 = dset_stim2[:nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest2_nonstim]
+labels_svmtest2 = np.concatenate((labels_stim2[:nsamps_svmtest],np.zeros(nsamps_svmtest2_nonstim)))
+
+labels_svmtrain[labels_svmtrain>0]=1
+labels_svmtest1[labels_svmtest1>0]=1
+labels_svmtest2[labels_svmtest2>0]=1
+
+
+dset_noisemovie = []
+nsamps_noisemovie = 50
+val_min = mov.min()
+val_max = mov.max()
+
+# for i in range(nsamps_noisemovie):
+rgb = np.random.uniform(val_min,val_max,size=(32*nsamps_noisemovie,mov.shape[1],mov.shape[2]))
+dset_noisemovie = utils.chunker(rgb,context_len,dict_metadata=None)   
+labels_noisemovie = np.ones(len(dset_noisemovie))
 
 # %% Context vectors test set
 
@@ -290,8 +759,8 @@ print(unique_stimuli)
 #(0, 'im005_r','im012_r','im024_r','im034_r','im036_r','im044_r','im047_r','im078_r','im083_r',
 # 'im087_r','im104_r','im111_r','im114_r','im115_r','omitted')
 
-keys_stim1 = ('im005_r','im036_r','im047_r','im087_r','im114_r')
-keys_stim2 = ('im044_r',)
+keys_stim1 = ('im005_r','im012_r','im024_r','im034_r','im036_r','im047_r','im078_r','im083_r','im087_r', 'im104_r','im111_r', 'im114_r')
+keys_stim2 = ('im044_r','im115_r')
 keys_nonstim = (0,)
 
 dset_stim1 = []
@@ -369,69 +838,113 @@ for i in range(mov_range):
     dset_nonstim_test = dset_nonstim_test+temp
 
     
+
 stiminfo_stim1 = []
+stiminfo_stim1_fullseq = []
 stiminfo_stim2 = []
 stiminfo_nonstim = []
 stiminfo_nonstim_test = []
 
+names_allstims = np.unique(keys_stim1+keys_stim2)
+label_ids_allstims = np.arange(0,len(names_allstims),dtype='int')+1
 
+labels_stim1 = np.zeros(0,dtype='int')
 i=0
+idx_topop = []
 for i in range(len(dset_stim1)):
     a = dset_stim1[i]['stiminfo']
-    a = list(a[-1:])
-    stiminfo_stim1.append(a)
+    a = list(a)
+    a = np.unique(a)
+    if len(a)>2:
+        idx_topop.append(i)
+    else:
+        a = a[-1:].tolist()
+        _,rgb,_ = np.intersect1d(names_allstims,a,return_indices=True)
+        labels_stim1 = np.hstack((labels_stim1,label_ids_allstims[rgb.astype('int')]))
+        stiminfo_stim1.append(a)
+        stiminfo_stim1_fullseq = stiminfo_stim1_fullseq+[list(dset_stim1[i]['stiminfo'])]
+        
+for i in range(len(idx_topop)):
+    dset_stim1.pop(i)
     
+    
+labels_stim2 = np.zeros(0,dtype='int')
 i=0
+idx_topop = []
 for i in range(len(dset_stim2)):
     a = dset_stim2[i]['stiminfo']
-    a = list(a[-1:])
-    stiminfo_stim2.append(a)
+    a = list(a)
+    a = np.unique(a)
+    if len(a)>2:
+        idx_topop.append(i)
+    else:
+        a = a[-1:].tolist()
+        _,rgb,_ = np.intersect1d(names_allstims,a,return_indices=True)
+        labels_stim2 = np.hstack((labels_stim2,label_ids_allstims[rgb.astype('int')]))
+        stiminfo_stim2.append(a)
+        
+for i in range(len(idx_topop)):
+    dset_stim2.pop(i)
+
+    
     
 i=0
 for i in range(len(dset_nonstim)):
     a = dset_nonstim[i]['stiminfo']
     a = list(a[-1:])
     stiminfo_nonstim.append(a)
-    
+
+
 i=0
 for i in range(len(dset_nonstim_test)):
     a = dset_nonstim_test[i]['stiminfo']
     a = list(a[-1:])
     stiminfo_nonstim_test.append(a)
-
     
 
-labels_stim1 = np.ones(len(stiminfo_stim1))
-labels_stim2 = np.ones(len(stiminfo_stim2))
+nsamps_svmtrain = 1750
+nsamps_svmtrain_nonstim = nsamps_svmtrain#int(nsamps_svmtrain/len(np.unique(stiminfo_stim1)))
+nsamps_svmtest = 80
+nsamps_svmtest1_nonstim = nsamps_svmtest#int(nsamps_svmtest/len(np.unique(stiminfo_stim1)))
+nsamps_svmtest2_nonstim = nsamps_svmtest#int(nsamps_svmtest/len(np.unique(stiminfo_stim2)))
+
+assert nsamps_svmtrain < len(labels_stim1)
+assert nsamps_svmtest < len(stiminfo_stim2)
+assert nsamps_svmtrain_nonstim<len(dset_nonstim)
 
 
-nsamps_svmtrain = 800
-nsamps_svmtest = 100
+idx_svmtrain = np.random.randint(0,len(dset_stim1),nsamps_svmtrain)
+rgb = np.setdiff1d(np.arange(len(dset_stim1)),idx_svmtrain)
+idx_svmtest = np.random.randint(0,len(rgb),nsamps_svmtest)
+idx_svmtest = rgb[idx_svmtest]
 
-assert(len(labels_stim1)>nsamps_svmtrain)
-assert(len(stiminfo_stim2)>nsamps_svmtest)
+dset_svmtrain=[]
+for i in range(nsamps_svmtrain):
+    dset_svmtrain = dset_svmtrain+dset_stim1[idx_svmtrain[i]:idx_svmtrain[i]+1]
+dset_svmtrain = dset_svmtrain + dset_nonstim[:nsamps_svmtrain_nonstim]
+labels_svmtrain = np.concatenate((labels_stim1[idx_svmtrain],np.zeros(nsamps_svmtrain_nonstim)))
+rgb = [stiminfo_stim1[a] for a in idx_svmtrain]
+rgb_fullseq = [stiminfo_stim1_fullseq[a] for a in idx_svmtrain]
 
-# idx_svmtrain = np.random.randint(0,len(dset_stim1),nsamps_svmtrain)
-# rgb = np.setdiff1d(np.arange(len(dset_stim1)),idx_svmtrain)
-# idx_svmtest = np.random.randint(0,len(rgb),nsamps_svmtest)
-# idx_svmtest = rgb[idx_svmtest]
+dset_svmtest1=[]
+for i in range(nsamps_svmtest):
+    dset_svmtest1 = dset_svmtest1+dset_stim1[idx_svmtest[i]:idx_svmtest[i]+1]
+dset_svmtest1 = dset_svmtest1+dset_nonstim_test[:nsamps_svmtest1_nonstim]
+labels_svmtest1 = np.concatenate((labels_stim1[idx_svmtest],np.zeros(nsamps_svmtest1_nonstim)))
+rgb_test = [stiminfo_stim1[a] for a in idx_svmtest]
 
-# dset_svmtrain=[]
-# for i in range(nsamps_svmtrain):
-#     dset_svmtrain = dset_svmtrain+dset_stim1[idx_svmtrain[i]:idx_svmtrain[i]+1]
+# dset_svmtrain = dset_stim1[:nsamps_svmtrain]+dset_nonstim[:nsamps_svmtrain]
+# labels_svmtrain = np.concatenate((labels_stim1[:nsamps_svmtrain],np.zeros(nsamps_svmtrain)))
 
-dset_svmtrain = dset_stim1[:nsamps_svmtrain]+dset_nonstim[:nsamps_svmtrain]
-labels_svmtrain = np.concatenate((labels_stim1[:nsamps_svmtrain],np.zeros(nsamps_svmtrain)))
+# dset_svmtest1 = dset_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest]
+# labels_svmtest1 = np.concatenate((labels_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest],np.zeros(nsamps_svmtest)))
 
-# dset_svmtest1=[]
-# for i in range(nsamps_svmtest):
-#     dset_svmtest1 = dset_svmtest1+dset_stim1[idx_svmtest[i]:idx_svmtest[i]+1]
+dset_svmtest2 = dset_stim2[:nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest2_nonstim]
+labels_svmtest2 = np.concatenate((labels_stim2[:nsamps_svmtest],np.zeros(nsamps_svmtest2_nonstim)))
 
-dset_svmtest1 = dset_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest]
-labels_svmtest1 = np.concatenate((labels_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest],np.zeros(nsamps_svmtest)))
-
-dset_svmtest2 = dset_stim2[:nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest]
-labels_svmtest2 = np.concatenate((labels_stim2[:nsamps_svmtest],np.zeros(nsamps_svmtest)))
+labels_svmtrain[labels_svmtrain>0]=1
+labels_svmtest1[labels_svmtest1>0]=1
+labels_svmtest2[labels_svmtest2>0]=1
 
 
 dset_noisemovie = []
@@ -459,17 +972,19 @@ print(unique_stimuli)
 #(0, 'im005_r','im012_r','im024_r','im034_r','im036_r','im044_r','im047_r','im078_r','im083_r',
 # 'im087_r','im104_r','im111_r','im114_r','im115_r','omitted')
 
-keys_stim1 = ('im005_r','im024_r','im036_r','im111_r')
-keys_stim2 = ('im005_r','im024_r','im036_r','im111_r') #('im044_r','im115_r')
+keys_stim1 = ('im005_r','im024_r')
+keys_stim2 = ('im005_r','im024_r') #('im044_r','im115_r')
 keys_nonstim = (0,)
 
 dset_stim1 = []
 dset_stim2 = []
 dset_nonstim = []
+dset_nonstim_test = []
+
 
 i=6
 
-mov_range = 6#len(dff_mov_grand)
+mov_range = len(dff_mov_grand)
 
 for i in range(mov_range):
     mov = dff_mov_grand[i]
@@ -488,23 +1003,27 @@ for i in range(mov_range):
         idx_stim2 = np.logical_or(idx_stim2,rgb)
     idx_stim2[:nframes_val]=False
     
-    
+
     idx_nonstim = np.zeros(dff_mov_grand_metadata[i].stim.shape[0])
     for j in range(len(keys_nonstim)):
         rgb = np.array(dff_mov_grand_metadata[i].stim == keys_nonstim[j])
         idx_nonstim = np.logical_or(idx_nonstim,rgb)
     # idx_nonstim[:nframes_val]=False
-
+    idx_nonstim_test = idx_nonstim.copy()
+    idx_nonstim_test[:nframes_val]=True
+    idx_nonstim_test[nframes_val:]=False
+    idx_nonstim[:nframes_val]=False
 
 
     mov_stim1 = mov[idx_stim1]
     mov_stim2 = mov[idx_stim2]
     mov_nonstim = mov[idx_nonstim]
+    mon_nonstim_test = mov[idx_nonstim_test]
     
     stiminfo_stim1 = dff_mov_grand_metadata[i].stim.iloc[idx_stim1]
     stiminfo_stim2 = dff_mov_grand_metadata[i].stim.iloc[idx_stim2]
     stiminfo_nonstim = dff_mov_grand_metadata[i].stim.iloc[idx_nonstim]
-
+    stiminfo_nonstim_test = dff_mov_grand_metadata[i].stim.iloc[idx_nonstim_test]
     
     dict_metadata = dict(mouse_id=mouse_id_grand[i],
                          ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo_stim1)
@@ -523,11 +1042,17 @@ for i in range(mov_range):
     temp = utils.chunker(mov_nonstim,context_len,dict_metadata=dict_metadata)
     dset_nonstim = dset_nonstim+temp
     
+    dict_metadata = dict(mouse_id=mouse_id_grand[i],
+                         ophys_exp_id=ophys_exp_id_grand[i],stiminfo=stiminfo_nonstim_test)
+    temp = utils.chunker(mov_nonstim_test,context_len,dict_metadata=dict_metadata)
+    dset_nonstim_test = dset_nonstim_test+temp
+
 
 
 stiminfo_stim1 = []
 stiminfo_stim2 = []
 stiminfo_nonstim = []
+stiminfo_nonstim_test = []
 
 names_allstims = np.unique(keys_stim1+keys_stim2)
 label_ids_allstims = np.arange(0,len(names_allstims),dtype='int')+1
@@ -557,30 +1082,52 @@ for i in range(len(dset_nonstim)):
     a = list(a[-1:])
     stiminfo_nonstim.append(a)
     
-    
+i=0
+for i in range(len(dset_nonstim_test)):
+    a = dset_nonstim_test[i]['stiminfo']
+    a = list(a[-1:])
+    stiminfo_nonstim_test.append(a)
+
 # labels_stim1 = np.ones(len(stiminfo_stim1))
 # labels_stim2 = np.ones(len(stiminfo_stim2))
 
 
-nsamps_svmtrain = 500
+nsamps_svmtrain = 300
 nsamps_svmtest = 100
-nsamps_fac_nostim = len(names_allstims)
+nsamps_svmtrain_nonstim = int(nsamps_svmtrain/len(np.unique(stiminfo_stim1)))
+nsamps_svmtest1_nonstim = int(nsamps_svmtest/len(np.unique(stiminfo_stim1)))
+nsamps_svmtest2_nonstim = int(nsamps_svmtest/len(np.unique(stiminfo_stim2)))
 
+assert (nsamps_svmtrain+100)<len(dset_stim1)
 assert(len(stiminfo_stim2)>nsamps_svmtest)
 
-# idx_svmtrain = np.random.randint(0,len(dset_stim1),nsamps_svmtrain)
-# rgb = np.setdiff1d(np.arange(len(dset_stim1)),idx_svmtrain)
-# idx_svmtest = np.random.randint(0,len(rgb),nsamps_svmtest)
-# idx_svmtest = rgb[idx_svmtest]
+idx_svmtrain = np.random.randint(0,len(dset_stim1),nsamps_svmtrain)
+rgb = np.setdiff1d(np.arange(len(dset_stim1)),idx_svmtrain)
+idx_svmtest = np.random.randint(0,len(rgb),nsamps_svmtest)
+idx_svmtest = rgb[idx_svmtest]
 
-dset_svmtrain = dset_stim1[:nsamps_svmtrain]+dset_nonstim[:round(nsamps_svmtrain/nsamps_fac_nostim)]
-labels_svmtrain = np.concatenate((labels_stim1[:nsamps_svmtrain],np.zeros(round(nsamps_svmtrain/nsamps_fac_nostim))))
+dset_svmtrain=[]
+for i in range(nsamps_svmtrain):
+    dset_svmtrain = dset_svmtrain+dset_stim1[idx_svmtrain[i]:idx_svmtrain[i]+1]
+dset_svmtrain = dset_svmtrain + dset_nonstim[:nsamps_svmtrain_nonstim]
+labels_svmtrain = np.concatenate((labels_stim1[idx_svmtrain],np.zeros(nsamps_svmtrain_nonstim)))
+rgb = [stiminfo_stim1[a] for a in idx_svmtrain]
 
-dset_svmtest1 = dset_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest]+dset_nonstim[nsamps_svmtrain:nsamps_svmtrain+round(nsamps_svmtest/nsamps_fac_nostim)]
-labels_svmtest1 = np.concatenate((labels_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest],np.zeros(round(nsamps_svmtest/nsamps_fac_nostim))))
+dset_svmtest1=[]
+for i in range(nsamps_svmtest):
+    dset_svmtest1 = dset_svmtest1+dset_stim1[idx_svmtest[i]:idx_svmtest[i]+1]
+dset_svmtest1 = dset_svmtest1+dset_nonstim_test[:nsamps_svmtest1_nonstim]
+labels_svmtest1 = np.concatenate((labels_stim1[idx_svmtest],np.zeros(nsamps_svmtest1_nonstim)))
+rgb_test = [stiminfo_stim1[a] for a in idx_svmtest]
 
-dset_svmtest2 = dset_stim2[:nsamps_svmtest]+dset_nonstim[nsamps_svmtrain:nsamps_svmtrain+round(nsamps_svmtest/nsamps_fac_nostim)]
-labels_svmtest2 = np.concatenate((labels_stim2[:nsamps_svmtest],np.zeros(round(nsamps_svmtest/nsamps_fac_nostim))))
+# dset_svmtrain = dset_stim1[:nsamps_svmtrain]+dset_nonstim[:nsamps_svmtrain]
+# labels_svmtrain = np.concatenate((labels_stim1[:nsamps_svmtrain],np.zeros(nsamps_svmtrain)))
+
+# dset_svmtest1 = dset_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest]
+# labels_svmtest1 = np.concatenate((labels_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest],np.zeros(nsamps_svmtest)))
+
+dset_svmtest2 = dset_stim2[:nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest2_nonstim]
+labels_svmtest2 = np.concatenate((labels_stim2[:nsamps_svmtest],np.zeros(nsamps_svmtest2_nonstim)))
 
 
 dset_noisemovie = []

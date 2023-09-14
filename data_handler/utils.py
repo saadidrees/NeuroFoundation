@@ -75,7 +75,7 @@ def unroll_data(data,time_axis=0,rolled_axis=1):
     return rgb
 
 
-def chunker(X,chunk_size,truncate=True,dict_metadata=None):
+def chunker(X,chunk_size,truncate=True,dict_metadata=None,DO_NORMALIZE=False):
     data_list = []
     counter = 0
     batch_startIdx = np.arange(0, X.shape[0], chunk_size)
@@ -85,9 +85,18 @@ def chunker(X,chunk_size,truncate=True,dict_metadata=None):
         # print('chunk %d of %d'%(counter,len(batch_startIdx)))
         if truncate==True:
             if cbatch + chunk_size < X.shape[0]:
-                temp = X[cbatch:(cbatch + chunk_size)]
+                rgb = X[cbatch:(cbatch + chunk_size)]
+                if DO_NORMALIZE==True:
+                    rgb = (rgb-np.mean(rgb,axis=0)[None,:,:])/(np.std(rgb,axis=0)[None,:,:]+1e-7)
+                
+                temp = rgb
         else:
-            temp = X[cbatch:(cbatch + chunk_size)]
+            rgb = X[cbatch:(cbatch + chunk_size)]
+            if DO_NORMALIZE==True:
+                rgb = (rgb-np.mean(rgb,axis=0)[None,:,:])/(np.std(rgb,axis=0)[None,:,:]+1e-7)
+                
+            temp = rgb
+
         
         if len(temp)>0:
             temp = dict(input_values=temp)

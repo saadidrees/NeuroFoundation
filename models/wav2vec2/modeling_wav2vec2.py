@@ -354,7 +354,7 @@ class Wav2Vec2LayerNormConvLayer(nn.Module):
         return hidden_states
 
 
-# SI: This is the feature encoder that needs to be changed
+# SI
 class Wav2Vec2LayerNormConvLayer3d(nn.Module):
     def __init__(self, config, layer_id=0):
         super().__init__()
@@ -365,16 +365,19 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
                     return torch.div(input_length - kernel_size, stride, rounding_mode="floor") + 1           
                 def _maxpool_out_length(input_length, kernel_size, stride):
                     return torch.div(input_length - kernel_size, stride, rounding_mode="floor") + 1
-    
+                    
                 dim_layerOut = config.dim_inputSpat
+                dim_tempOut = config.dim_inputTemp
                 for i in range(layer_id):
                     dim_conv_out = _conv_out_length(dim_layerOut,config.conv_kernel_spatial[i],config.conv_stride_spatial[i])
                     dim_maxpool_out = _maxpool_out_length(dim_conv_out,config.maxpool_kernel_spatial[i],config.maxpool_stride_spatial[i])
                     dim_layerOut = dim_maxpool_out
+                    dim_temporal_conv_out = _conv_out_length(dim_tempOut,config.conv_kernel[i],config.conv_stride[i])
             else:
                 dim_layerOut = config.dim_inputSpat
+                dim_tempOut = config.dim_inputTemp
 
-            return dim_layerOut
+            return dim_layerOut,dim_tempOut
 
         # spat_output_size = [31,14,6,4,2,1]
 
@@ -392,11 +395,14 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
         self.maxpool = nn.MaxPool3d((1,config.maxpool_kernel_spatial[layer_id],config.maxpool_kernel_spatial[layer_id]),
                                     stride=(1,config.maxpool_stride_spatial[layer_id],config.maxpool_stride_spatial[layer_id]))
         # print('layer_id')
-        print(layer_id)
-        dim_cnnMpOut = _get_layerOutputDim(layer_id+1)
+        # print(layer_id)
+        dim_cnnMpOut,dim_temporalOut = _get_layerOutputDim(layer_id+1)
+        # print(dim_cnnMpOut)
+        # print(dim_temporalOut)
         
-        # print('dim:%d'%dim_cnnMpOut)
+        # print('Layer Norm axis:(%d,%d,%d,%d)'%(self.out_conv_dim,dim_temporalOut,dim_cnnMpOut,dim_cnnMpOut))
         self.layer_norm = nn.LayerNorm([self.out_conv_dim,dim_cnnMpOut,dim_cnnMpOut],elementwise_affine=True)
+        # self.layer_norm = nn.LayerNorm([self.out_conv_dim,dim_temporalOut,dim_cnnMpOut,dim_cnnMpOut],elementwise_affine=False)
         self.activation = ACT2FN[config.feat_extract_activation]
         
         if layer_id == len(config.conv_dim):
@@ -405,6 +411,7 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
     def forward(self, hidden_states):
         hidden_states = self.conv(hidden_states)
         hidden_states = self.maxpool(hidden_states)
+        # print(hidden_states.shape)
         hidden_states = hidden_states.transpose(1,2)
         hidden_states = self.layer_norm(hidden_states)
         hidden_states = hidden_states.transpose(1,2)
@@ -413,7 +420,19 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
 
         return hidden_states
     
+# SI
+class Wav2Vec2InputLayerNorm(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        
+        self.layer_norm = nn.LayerNorm([config.dim_inputTemp,config.dim_inputSpat,config.dim_inputSpat],elementwise_affine=False)
+        
 
+    def forward(self, hidden_states):
+        hidden_states = self.layer_norm(hidden_states)
+        print(hidden_states.shape)
+
+        return hidden_states
 
 class Wav2Vec2GroupNormConvLayer(nn.Module):
     def __init__(self, config, layer_id=0):
@@ -563,7 +582,6 @@ class Wav2Vec2FeatureExtractor(Wav2Vec2FeatureEncoder):
             FutureWarning,
         )
 
-# SI --> removed layer norm for testing
 
 class Wav2Vec2FeatureProjection(nn.Module):
     def __init__(self, config):
@@ -1209,8 +1227,11 @@ class Wav2Vec2PreTrainedModel(PreTrainedModel):
             if module.bias is not None:
                 module.bias.data.zero_()
         elif isinstance(module, (nn.LayerNorm, nn.GroupNorm)):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+            try:
+                module.bias.data.zero_()
+                module.weight.data.fill_(1.0)
+            except:
+                print('Layer norm elementwise_affine=False hence no weights to initialize')
         elif isinstance(module, nn.Conv1d):
             nn.init.kaiming_normal_(module.weight)
 
@@ -1234,16 +1255,7 @@ class Wav2Vec2PreTrainedModel(PreTrainedModel):
             return torch.div(input_length - kernel_size, stride, rounding_mode="floor") + 1
 
         for kernel_size, stride in zip(self.config.conv_kernel, self.config.conv_stride):
-            # print('input')
-            # print(input_lengths)
-            # print('kernel_size')
-            # print(kernel_size)
-            # print('stride')
-            # print(stride)
-
             input_lengths = _conv_out_length(input_lengths, kernel_size, stride)
-            # print('input lengths')
-            # print(input_lengths)
         
         # print('feat output length')
         # print(input_lengths)
@@ -1382,8 +1394,6 @@ class Wav2Vec2PreTrainedModel(PreTrainedModel):
         ```
         """
         
-        print('------ TEST---------')        
-        
         if self.config.adapter_attn_dim is None:
             raise ValueError(f"Cannot load_adapter for {target_lang} if `config.adapter_attn_dim` is not defined.")
 
@@ -1403,7 +1413,6 @@ class Wav2Vec2PreTrainedModel(PreTrainedModel):
         model_path_or_id = self.config._name_or_path
         state_dict = None
         
-        print('------------ TEST-----------')
 
         # 1. Let's first try loading a safetensors adapter weight
         if use_safetensors is not False:
@@ -1566,6 +1575,7 @@ class Wav2Vec2Model(Wav2Vec2PreTrainedModel):
         self.config = config
         self.feature_extractor = Wav2Vec2FeatureEncoder(config)
         self.feature_projection = Wav2Vec2FeatureProjection(config)
+        self.inputNorm = Wav2Vec2InputLayerNorm(config)
 
         # model only needs masking vector if mask prob is > 0.0
         if config.mask_time_prob > 0.0 or config.mask_feature_prob > 0.0:
@@ -1672,6 +1682,12 @@ class Wav2Vec2Model(Wav2Vec2PreTrainedModel):
         if DEBUG:
             print('modeling_wav2vec/Wav2Vec2Model/forward/input')
             print(input_values.shape)
+            
+        # input_values = self.inputNorm(input_values)
+        # if DEBUG:
+        #     print('modeling_wav2vec/Wav2Vec2Model/forward/inputNorm')
+        #     print(input_values.shape)
+
         
         extract_features = self.feature_extractor(input_values)
         if DEBUG:

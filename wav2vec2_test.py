@@ -61,6 +61,7 @@ from transformers import (
     set_seed,
 )
 
+
 import models.wav2vec2.feature_extraction_wav2vec2
 from models.wav2vec2.feature_extraction_wav2vec2 import Wav2Vec2FeatureExtractor
 import models.wav2vec2.modeling_wav2vec2
@@ -81,12 +82,15 @@ argsDict = dict(
     dataset_config_names=["clean","clean"],
     dataset_split_names=['train.clean.100'],
     model_name_or_path="patrickvonplaten/wav2vec2-base-v2",
-    output_dir="/home/saad/data/analyses/wav2vec2/wav2vec2-epochs/",
+    output_dir="/home/saad/data/analyses/wav2vec2/wav2vec2-2d-inputNorm/",
+    
+    dim_inputSpat = 128,
+    dim_inputTemp = context_len,
     
     max_train_steps=None,
-    num_train_epochs=100,
-    per_device_train_batch_size=128,
-    per_device_eval_batch_size=128,
+    num_train_epochs=2000,
+    per_device_train_batch_size=256,
+    per_device_eval_batch_size=256,
     gradient_accumulation_steps=1,  # 8
 
     lr_scheduler_type='linear',     # ['linear', 'cosine', 'cosine_with_restarts', 'polynomial', 'constant', 'constant_with_warmup', 'inverse_sqrt', 'reduce_lr_on_plateau']
@@ -103,10 +107,10 @@ argsDict = dict(
 
     logging_steps=1,
     saving_steps=1000,
-    saving_epochs=10,
+    saving_epochs=25,
     gradient_checkpointing=True,
-    mask_time_prob=0.65,
-    mask_time_length=6,
+    mask_time_prob=0.65, #0.65,
+    mask_time_length=3,        # Having this smaller (6) improves validation losses - but why?
 
     preprocessing_num_workers=None,
     validation_split_percentage=1,
@@ -167,7 +171,7 @@ class DataCollatorForWav2Vec2Pretraining:
     padding: Union[bool, str] = "longest"
     pad_to_multiple_of: Optional[int] = None
     mask_time_prob: Optional[float] = 0.65
-    mask_time_length: Optional[int] = 10
+    mask_time_length: Optional[int] = 3
 
     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         # reformat list to dict and set to pytorch format
@@ -275,9 +279,10 @@ accelerator.wait_for_everyone()
 
 # %% Model
 # config = Wav2Vec2Config.from_pretrained(args.model_name_or_path)
-config = Wav2Vec2Config(dim_inputSpat=128)
+config = Wav2Vec2Config(dim_inputSpat=args.dim_inputSpat,dim_inputTemp=args.dim_inputTemp)
 feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(args.model_name_or_path)
 feature_extractor.sampling_rate = 11
+feature_extractor.do_normalize = False
 
 
 # pretraining is only supported for "newer" stable layer norm architecture
@@ -407,6 +412,15 @@ ppl_train = []
 for epoch in range(starting_epoch, args.num_train_epochs):
     gc.collect()
     model.train()
+    
+    cp_file = args.output_dir+'cpt_'+str(0)
+    if args.output_dir is not None:
+        accelerator.wait_for_everyone()
+        unwrapped_model = accelerator.unwrap_model(model)
+        unwrapped_model.save_pretrained(
+            cp_file, is_main_process=accelerator.is_main_process, save_function=accelerator.save
+        )
+
     # for step, batch in enumerate(train_dataloader):
     start_time_epoch = time.time()
     for step, batch in enumerate(train_dataloader):
@@ -603,7 +617,17 @@ for epoch in range(starting_epoch, args.num_train_epochs):
             if accelerator.is_main_process:
                 if args.push_to_hub:
                     repo.push_to_hub(commit_message="End of training", auto_lfs_prune=True)
-    
+        fontsize=12
+        fig,axs = plt.subplots(2,3,figsize=(20,10));axs=np.ravel(axs)
+        axs[0].plot(np.array(tloss_train),label='train');axs[0].set_xlabel('Steps');axs[0].set_title('Total loss');axs[0].legend()
+        axs[1].plot(np.array(closs_train),label='train');axs[1].set_xlabel('Steps');axs[1].set_title('contrastive loss');axs[0].legend()
+        axs[2].plot(np.array(dloss_train),label='train');axs[2].set_xlabel('Steps');axs[2].set_title('diversity loss');axs[0].legend()
+        axs[3].plot(np.array(lr_train));axs[3].set_xlabel('Steps');axs[3].set_title('lr')
+        axs[4].plot(np.array(gnorm));axs[4].set_xlabel('Steps');axs[4].set_title('gradient norm')
+        axs[5].plot(np.array(ppl_train));axs[5].set_xlabel('Steps');axs[5].set_title('Perplexity')
+        fname_plot = os.path.join(args.output_dir,'fig_losses.png')
+        fig.savefig(fname_plot)
+        plt.show()
     
     elapsed_time_epoch = time.time()-start_time_epoch
     t_epochs.append(elapsed_time_epoch)
@@ -643,6 +667,7 @@ with open(fname_saveLosses,'w',newline='',encoding='utf-8') as csvfile:
 tloss_train_csvread = []
 closs_train_csvread = []
 dloss_train_csvread = []
+ppl_train_csvread = []
 lr_train_csvread = []
 gnorm_csvread = []
 tloss_val_csvread = []
@@ -655,35 +680,45 @@ with open(fname_saveLosses,'r') as csvfile:
         tloss_train_csvread.append(row['train_tloss'])
         closs_train_csvread.append(row['train_closs'])
         dloss_train_csvread.append(row['train_dloss'])
+        ppl_train_csvread.append(row['ppl_train'])
         lr_train_csvread.append(row['lr'])
         gnorm_csvread.append(row['gnorm'])
         tloss_val_csvread.append(row['val_tloss'])
         closs_val_csvread.append(row['val_closs'])
         dloss_val_csvread.append(row['val_dloss'])
 
-tloss_train_csvread = np.asarray(tloss_train_csvread,dtype='float64')
-closs_train_csvread = np.asarray(closs_train_csvread,dtype='float64')
-dloss_train_csvread = np.asarray(dloss_train_csvread,dtype='float64')
-lr_train_csvread = np.asarray(lr_train_csvread,dtype='float64')
-gnorm_csvread = np.asarray(gnorm_csvread,dtype='float64')
-tloss_val_csvread = np.asarray(tloss_val_csvread,dtype='float64')
-closs_val_csvread = np.asarray(closs_val_csvread,dtype='float64')
-dloss_val_csvread = np.asarray(dloss_val_csvread,dtype='float64')
+tloss_train = np.asarray(tloss_train_csvread,dtype='float64')
+closs_train = np.asarray(closs_train_csvread,dtype='float64')
+dloss_train = np.asarray(dloss_train_csvread,dtype='float64')
+ppl_train = np.asarray(ppl_train_csvread,dtype='float64')
+lr_train = np.asarray(lr_train_csvread,dtype='float64')
+gnorm = np.asarray(gnorm_csvread,dtype='float64')
+tloss_val = np.asarray(tloss_val_csvread,dtype='float64')
+closs_val = np.asarray(closs_val_csvread,dtype='float64')
+dloss_val = np.asarray(dloss_val_csvread,dtype='float64')
 """
 
 # %% Plot losses
 tloss_train = np.array(closs_train) + (config.diversity_loss_weight * np.array(dloss_train))
 tloss_val = np.array(closs_val) + (config.diversity_loss_weight * np.array(dloss_val))
 
-xaxis_val = np.linspace(0,tloss_train.shape[0],num=tloss_val.shape[0])
+stepsPerEpoch = int(len(tloss_train)/args.num_train_epochs)
+
+rgb = np.isnan(tloss_val)
+tloss_val_plot = tloss_val[~rgb]
+closs_val_plot = closs_val[~rgb]
+dloss_val_plot = dloss_val[~rgb]
+
+xaxis_val = np.floor(np.linspace(0,tloss_train.shape[0],num=tloss_val_plot.shape[0])).astype('int')
 
 idx_toplot = np.arange(0,tloss_train.shape[0])  # tloss_train.shape[0]
 
+
 fontsize=12
 fig,axs = plt.subplots(2,3,figsize=(20,10));axs=np.ravel(axs)
-axs[0].plot(tloss_train[idx_toplot],label='train');axs[0].plot(xaxis_val,tloss_val,label='val');axs[0].set_xlabel('Steps');axs[0].set_title('Total loss');axs[0].legend()
-axs[1].plot(closs_train[idx_toplot],label='train');axs[1].plot(xaxis_val,closs_val,label='val');axs[1].set_xlabel('Steps');axs[1].set_title('contrastive loss');axs[0].legend()
-axs[2].plot(dloss_train[idx_toplot],label='train');axs[2].plot(xaxis_val,dloss_val,label='val');axs[2].set_xlabel('Steps');axs[2].set_title('diversity loss');axs[0].legend()
+axs[0].plot(tloss_train[idx_toplot],label='train');axs[0].plot(xaxis_val,tloss_val_plot,label='val');axs[0].set_xlabel('Steps');axs[0].set_title('Total loss');axs[0].legend()
+axs[1].plot(closs_train[idx_toplot],label='train');axs[1].plot(xaxis_val,closs_val_plot,label='val');axs[1].set_xlabel('Steps');axs[1].set_title('contrastive loss');axs[0].legend()
+axs[2].plot(dloss_train[idx_toplot],label='train');axs[2].plot(xaxis_val,dloss_val_plot,label='val');axs[2].set_xlabel('Steps');axs[2].set_title('diversity loss');axs[0].legend()
 axs[3].plot(lr_train[idx_toplot]);axs[3].set_xlabel('Steps');axs[3].set_title('lr')
 axs[4].plot(gnorm[idx_toplot]);axs[4].set_xlabel('Steps');axs[4].set_title('gradient norm')
 axs[5].plot(ppl_train[idx_toplot]);axs[5].set_xlabel('Steps');axs[5].set_title('Perplexity')
@@ -693,12 +728,387 @@ axs[5].plot(ppl_train[idx_toplot]);axs[5].set_xlabel('Steps');axs[5].set_title('
 from sklearn import svm
 import seaborn as sbn
 
+cpts_all = np.arange(0,1050,50) #[0,10,20,30,40,50,60,70,80,90,100,150,200,250,300,350,400,450,500]
+
+keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
+
+
+n_loops = 3
+
+score1_stim_loop = np.zeros((len(cpts_all),n_loops));score1_stim_loop[:]=np.nan
+score1_nonstim_loop = np.zeros((len(cpts_all),n_loops));score1_nonstim_loop[:]=np.nan
+score1_total_loop = np.zeros((len(cpts_all),n_loops));score1_total_loop[:]=np.nan
+score2_stim_loop = np.zeros((len(cpts_all),n_loops));score2_stim_loop[:]=np.nan
+score2_nonstim_loop = np.zeros((len(cpts_all),n_loops));score2_nonstim_loop[:]=np.nan
+score2_total_loop = np.zeros((len(cpts_all),n_loops));score2_total_loop[:]=np.nan
+score_noiseAsStim_loop = np.zeros((len(cpts_all),n_loops));score_noiseAsStim_loop[:]=np.nan
+score_noiseAsNonstim_loop = np.zeros((len(cpts_all),n_loops));score_noiseAsNonstim_loop[:]=np.nan
+
+
+mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-inputNorm/'
+
+c=0
+for c in range(0,len(cpts_all)):
+    cpt = cpts_all[c]
+    if cpt==0:
+        mdl_dir_cpt = os.path.join(mdl_dir,'cpt_'+str(25)+'/')
+        model = Wav2Vec2ForPreTraining.from_pretrained(mdl_dir_cpt)
+        config = model.config
+        model = Wav2Vec2ForPreTraining(config)
+    else:
+        mdl_dir_cpt = os.path.join(mdl_dir,'cpt_'+str(cpt)+'/')
+        model = Wav2Vec2ForPreTraining.from_pretrained(mdl_dir_cpt)
+        # config = model.config
+    model = model.cuda()
+    
+    mask_time_prob = config.mask_time_prob if args.mask_time_prob is None else args.mask_time_prob
+    mask_time_length = config.mask_time_length if args.mask_time_length is None else args.mask_time_length
+
+    
+    data_collator = DataCollatorForWav2Vec2Pretraining(
+        model=model,
+        feature_extractor=feature_extractor,
+        pad_to_multiple_of=args.pad_to_multiple_of,
+        mask_time_prob=mask_time_prob,
+        mask_time_length=mask_time_length,
+    )
+    
+    vec_dset_svmtrain = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtrain))
+    dataloader_svmtrain = DataLoader(vec_dset_svmtrain, collate_fn=data_collator, batch_size=32)
+    
+    vec_dset_svmtest1 = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtest1))
+    dataloader_svmtest1 = DataLoader(vec_dset_svmtest1, collate_fn=data_collator, batch_size=32)
+    
+    vec_dset_svmtest2 = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtest2))
+    dataloader_svmtest2 = DataLoader(vec_dset_svmtest2, collate_fn=data_collator, batch_size=32)
+    
+    vec_dset_noise = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_noisemovie))
+    dataloader_noise = DataLoader(vec_dset_noise, collate_fn=data_collator, batch_size=32)
+    
+    
+    hidden_size = config.hidden_size
+    temp_dim = 32
+    
+    i=0
+    for i in range(n_loops):
+        print('Loop %d'%i)
+        cv_svmtrain_all = np.zeros((0,temp_dim,hidden_size))
+        model.eval()
+        for step, batch in enumerate(dataloader_svmtrain):
+            with torch.no_grad():
+                torch.cuda.empty_cache()
+                batch=batch.to(device='cuda')
+                batch.pop("sub_attention_mask", None)
+                outputs = model(**batch)
+                rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+                cv_svmtrain_all = np.concatenate((cv_svmtrain_all,rgb),axis=0)
+                
+                
+        cv_svmtest1_all = np.zeros((0,temp_dim,hidden_size))
+        # model.eval()
+        for step, batch in enumerate(dataloader_svmtest1):
+            with torch.no_grad():
+                torch.cuda.empty_cache()
+                batch=batch.to(device='cuda')
+                batch.pop("sub_attention_mask", None)
+                outputs = model(**batch)
+                rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+                cv_svmtest1_all = np.concatenate((cv_svmtest1_all,rgb),axis=0)
+        
+        
+        cv_svmtest2_all = np.zeros((0,temp_dim,hidden_size))
+        # model.eval()
+        for step, batch in enumerate(dataloader_svmtest2):
+            with torch.no_grad():
+                torch.cuda.empty_cache()
+                batch=batch.to(device='cuda')
+                batch.pop("sub_attention_mask", None)
+                outputs = model(**batch)
+                rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+                cv_svmtest2_all = np.concatenate((cv_svmtest2_all,rgb),axis=0)
+        
+        cv_noise_all = np.zeros((0,temp_dim,hidden_size))
+        # model.eval()
+        for step, batch in enumerate(dataloader_noise):
+            with torch.no_grad():
+                torch.cuda.empty_cache()
+                batch=batch.to(device='cuda')
+                batch.pop("sub_attention_mask", None)
+                outputs = model(**batch)
+                rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+                cv_noise_all = np.concatenate((cv_noise_all,rgb),axis=0)
+    
+        # for l in range(24):
+        idx_entry = -1#l #-1#
+        cv_svmtrain = cv_svmtrain_all[:,idx_entry,:]
+        cv_svmtest1 = cv_svmtest1_all[:,idx_entry,:]
+        cv_svmtest2 = cv_svmtest2_all[:,idx_entry,:]
+        cv_noise = cv_noise_all[:,idx_entry,:]
+        
+        # cv_svmtrain = cv_svmtrain_all.reshape(-1,cv_svmtrain_all.shape[1]*cv_svmtrain_all.shape[2])
+        # cv_svmtest1 = cv_svmtest1_all.reshape(-1,cv_svmtest1_all.shape[1]*cv_svmtest1_all.shape[2])
+        # cv_svmtest2 = cv_svmtest2_all.reshape(-1,cv_svmtest2_all.shape[1]*cv_svmtest2_all.shape[2])
+        # cv_noise = cv_noise_all.reshape(-1,cv_noise_all.shape[1]*cv_noise_all.shape[2])
+        
+        cv_svmtrain_norm = cv_svmtrain #(cv_svmtrain-np.min(cv_svmtrain,axis=0)[None,:])/(np.max(cv_svmtrain,axis=0)[None,:]-np.min(cv_svmtrain,axis=0)[None,:])
+        cv_svmtest1_norm = cv_svmtest1#(cv_svmtest1-np.min(cv_svmtrain,axis=0)[None,:])/(np.max(cv_svmtrain,axis=0)[None,:]-np.min(cv_svmtrain,axis=0)[None,:])
+        cv_svmtest2_norm = cv_svmtest2#(cv_svmtest2-np.min(cv_svmtrain,axis=0)[None,:])/(np.max(cv_svmtrain,axis=0)[None,:]-np.min(cv_svmtrain,axis=0)[None,:])
+        cv_noise_norm = cv_noise#(cv_noise-np.min(cv_svmtrain,axis=0)[None,:])/(np.max(cv_svmtrain,axis=0)[None,:]-np.min(cv_svmtrain,axis=0)[None,:])
+        
+        clf = svm.SVC()
+        svm_fit = clf.fit(cv_svmtrain_norm, labels_svmtrain) # svm_fit = clf.fit(cv_svmtrain_norm[:nsamps_svmtrain], labels_svmtrain[:nsamps_svmtrain])
+        print(svm_fit.score(cv_svmtrain_norm, labels_svmtrain)) # print(svm_fit.score(cv_svmtrain_norm[:nsamps_svmtrain], labels_svmtrain[:nsamps_svmtrain])) 
+    
+        labels_svmtest1_predict = svm_fit.predict(cv_svmtest1_norm) # labels_svmtest1_predict = svm_fit.predict(cv_svmtest1_norm[:nsamps_svmtest]); score=svm_fit.score(cv_svmtest1_norm[:nsamps_svmtest], labels_svmtest1[:nsamps_svmtest])
+        score1_stim = (labels_svmtest1_predict[labels_svmtest1!=0] == labels_svmtest1[labels_svmtest1!=0]).sum()/len(labels_svmtest1[labels_svmtest1!=0])
+        score1_nonstim = (labels_svmtest1_predict[labels_svmtest1==0] == labels_svmtest1[labels_svmtest1==0]).sum()/len(labels_svmtest1[labels_svmtest1==0])
+        score1_total = (labels_svmtest1_predict == labels_svmtest1).sum()/len(labels_svmtest1)
+        print('Test Set 1 Accuracy - Stim: %0.2f | NonStim: %0.2f | Total: %0.2f | idx_entry: %d' %(score1_stim,score1_nonstim,score1_total,idx_entry))
+    
+        labels_svmtest2_predict = svm_fit.predict(cv_svmtest2_norm)
+        score2_stim = (labels_svmtest2_predict[labels_svmtest2!=0] == labels_svmtest2[labels_svmtest2!=0]).sum()/len(labels_svmtest2[labels_svmtest2!=0])
+        score2_nonstim = (labels_svmtest2_predict[labels_svmtest2==0] == labels_svmtest2[labels_svmtest2==0]).sum()/len(labels_svmtest2[labels_svmtest2==0])
+        score2_total = (labels_svmtest2_predict == labels_svmtest2).sum()/len(labels_svmtest2)
+        print('Test Set 2 Accuracy - Stim: %0.2f | NonStim: %0.2f | Total: %0.2f' %(score2_stim,score2_nonstim,score2_total))
+    
+        # score1_stim = (labels_svmtest1_predict[labels_svmtest1==1] == labels_svmtest1[labels_svmtest1==1]).sum()/len(labels_svmtest1[labels_svmtest1==1])
+        # score1_nonstim = (labels_svmtest1_predict[labels_svmtest1==2] == labels_svmtest1[labels_svmtest1==2]).sum()/len(labels_svmtest1[labels_svmtest1==2])
+        # score1_total = (labels_svmtest1_predict == labels_svmtest1).sum()/len(labels_svmtest1)
+        # print('Test Set 1 Accuracy - Stim 1: %0.2f | Stim 2: %0.2f | Total: %0.2f | idx_entry: %d' %(score1_stim,score1_nonstim,score1_total,idx_entry))
+    
+        labels_noise_predict = svm_fit.predict(cv_noise_norm)
+        score2_noise_stim = (labels_noise_predict == 1).sum()/len(labels_noisemovie)
+        score2_noise_nonstim = (labels_noise_predict == 0).sum()/len(labels_noisemovie)
+        print('Noise - Classified as stim: %0.2f | Classified as nonstim %0.2f' %(score2_noise_stim,score2_noise_nonstim))
+    
+        score1_stim_loop[c,i] = score1_stim
+        score1_nonstim_loop[c,i] = score1_nonstim
+        score1_total_loop[c,i] = score1_total
+        score2_stim_loop[c,i] = score2_stim
+        score2_nonstim_loop[c,i] = score2_nonstim
+        score2_total_loop[c,i] = score2_total
+        score_noiseAsStim_loop[c,i] = score2_noise_stim
+        score_noiseAsNonstim_loop[c,i] = score2_noise_nonstim
+        
+# %%
+
+labels_scores = cpts_all
+x_inter = 1
+y_range = (0.0,0.9)
+fig,axs=plt.subplots(1,3,figsize=(20,5));axs=np.ravel(axs)
+axs[0].boxplot(score2_total_loop.T,labels=labels_scores);axs[0].set_ylim([0,1.1])
+axs[0].set_yticks(np.arange(0,1.1,.1))
+axs[0].set_ylim(y_range)
+axs[0].set_xticks(np.arange(0,len(cpts_all),x_inter))
+axs[0].set_xticklabels(cpts_all[np.arange(0,len(cpts_all),x_inter,'int')])
+axs[0].grid(axis='y',color=[.7,.7,.7],linestyle='--')
+axs[0].set_title('total')
+
+axs[1].boxplot(score2_stim_loop.T,labels=labels_scores);axs[1].set_ylim([0,1.1])
+axs[1].set_yticks(np.arange(0,1.1,.1))
+axs[1].set_ylim(y_range)
+axs[1].grid(axis='y',color=[.7,.7,.7],linestyle='--')
+axs[1].set_xticks(np.arange(0,len(cpts_all),x_inter))
+axs[1].set_xticklabels(cpts_all[np.arange(0,len(cpts_all),x_inter)])
+axs[1].set_title('stim induced')
+
+
+axs[2].boxplot(score2_nonstim_loop.T,labels=labels_scores);axs[2].set_ylim([0,1.1])
+axs[2].set_yticks(np.arange(0,1.1,.1))
+axs[2].set_ylim(y_range)
+axs[2].grid(axis='y',color=[.7,.7,.7],linestyle='--')
+axs[2].set_xticks(np.arange(0,len(cpts_all),x_inter))
+axs[2].set_xticklabels(cpts_all[np.arange(0,len(cpts_all),x_inter)])
+axs[2].set_title('non-stim induced')
+
+
+# %% Context vectors test: KNN
+from sklearn.neighbors import NearestNeighbors, KNeighborsClassifier
+import seaborn as sbn
+
+cpts_all = np.arange(0,1000,50) #[0,10,20,30,40,50,60,70,80,90,100,150,200,250,300,350,400,450,500]
+
+keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
+
+
+n_loops = 3
+
+score1_stim_loop = np.zeros((len(cpts_all),n_loops));score1_stim_loop[:]=np.nan
+score1_nonstim_loop = np.zeros((len(cpts_all),n_loops));score1_nonstim_loop[:]=np.nan
+score1_total_loop = np.zeros((len(cpts_all),n_loops));score1_total_loop[:]=np.nan
+score2_stim_loop = np.zeros((len(cpts_all),n_loops));score2_stim_loop[:]=np.nan
+score2_nonstim_loop = np.zeros((len(cpts_all),n_loops));score2_nonstim_loop[:]=np.nan
+score2_total_loop = np.zeros((len(cpts_all),n_loops));score2_total_loop[:]=np.nan
+score_noiseAsStim_loop = np.zeros((len(cpts_all),n_loops));score_noiseAsStim_loop[:]=np.nan
+score_noiseAsNonstim_loop = np.zeros((len(cpts_all),n_loops));score_noiseAsNonstim_loop[:]=np.nan
+
+dim_temp = 24
+dim_hidden = 768
+
+mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-inputNorm/'
+
+c=0
+for c in range(0,len(cpts_all)):
+    cpt = cpts_all[c]
+    if cpt==0:
+        mdl_dir_cpt = os.path.join(mdl_dir,'cpt_'+str(25)+'/')
+        model = Wav2Vec2ForPreTraining.from_pretrained(mdl_dir_cpt)
+        config = model.config
+        model = Wav2Vec2ForPreTraining(config)
+    else:
+        mdl_dir_cpt = os.path.join(mdl_dir,'cpt_'+str(cpt)+'/')
+        model = Wav2Vec2ForPreTraining.from_pretrained(mdl_dir_cpt)
+    model = model.cuda()
+    
+    mask_time_prob = config.mask_time_prob if args.mask_time_prob is None else args.mask_time_prob
+    mask_time_length = config.mask_time_length if args.mask_time_length is None else args.mask_time_length
+
+    
+    data_collator = DataCollatorForWav2Vec2Pretraining(
+        model=model,
+        feature_extractor=feature_extractor,
+        pad_to_multiple_of=args.pad_to_multiple_of,
+        mask_time_prob=mask_time_prob,
+        mask_time_length=mask_time_length,
+    )
+    
+    vec_dset_svmtrain = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtrain))
+    dataloader_svmtrain = DataLoader(vec_dset_svmtrain, collate_fn=data_collator, batch_size=32)
+    
+    vec_dset_svmtest1 = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtest1))
+    dataloader_svmtest1 = DataLoader(vec_dset_svmtest1, collate_fn=data_collator, batch_size=32)
+    
+    vec_dset_svmtest2 = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtest2))
+    dataloader_svmtest2 = DataLoader(vec_dset_svmtest2, collate_fn=data_collator, batch_size=32)
+    
+    vec_dset_noise = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_noisemovie))
+    dataloader_noise = DataLoader(vec_dset_noise, collate_fn=data_collator, batch_size=32)
+    
+    i=0
+    for i in range(n_loops):
+        print('Loop %d'%i)
+        cv_svmtrain_all = np.zeros((0,dim_temp,dim_hidden))
+        model.eval()
+        for step, batch in enumerate(dataloader_svmtrain):
+            with torch.no_grad():
+                torch.cuda.empty_cache()
+                batch=batch.to(device='cuda')
+                batch.pop("sub_attention_mask", None)
+                outputs = model(**batch)
+                rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+                cv_svmtrain_all = np.concatenate((cv_svmtrain_all,rgb),axis=0)
+                
+                
+        cv_svmtest1_all = np.zeros((0,dim_temp,dim_hidden))
+        # model.eval()
+        for step, batch in enumerate(dataloader_svmtest1):
+            with torch.no_grad():
+                torch.cuda.empty_cache()
+                batch=batch.to(device='cuda')
+                batch.pop("sub_attention_mask", None)
+                outputs = model(**batch)
+                rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+                cv_svmtest1_all = np.concatenate((cv_svmtest1_all,rgb),axis=0)
+        
+        
+        cv_svmtest2_all = np.zeros((0,dim_temp,dim_hidden))
+        # model.eval()
+        for step, batch in enumerate(dataloader_svmtest2):
+            with torch.no_grad():
+                torch.cuda.empty_cache()
+                batch=batch.to(device='cuda')
+                batch.pop("sub_attention_mask", None)
+                outputs = model(**batch)
+                rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+                cv_svmtest2_all = np.concatenate((cv_svmtest2_all,rgb),axis=0)
+        
+        cv_noise_all = np.zeros((0,dim_temp,dim_hidden))
+        # model.eval()
+        for step, batch in enumerate(dataloader_noise):
+            with torch.no_grad():
+                torch.cuda.empty_cache()
+                batch=batch.to(device='cuda')
+                batch.pop("sub_attention_mask", None)
+                outputs = model(**batch)
+                rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+                cv_noise_all = np.concatenate((cv_noise_all,rgb),axis=0)
+    
+        # for l in range(24):
+        idx_entry = -1#l #-1#
+        cv_svmtrain = cv_svmtrain_all[:,idx_entry,:]
+        cv_svmtest1 = cv_svmtest1_all[:,idx_entry,:]
+        cv_svmtest2 = cv_svmtest2_all[:,idx_entry,:]
+        cv_noise = cv_noise_all[:,idx_entry,:]
+        
+        # cv_svmtrain = cv_svmtrain_all.reshape(-1,cv_svmtrain_all.shape[1]*cv_svmtrain_all.shape[2])
+        # cv_svmtest1 = cv_svmtest1_all.reshape(-1,cv_svmtest1_all.shape[1]*cv_svmtest1_all.shape[2])
+        # cv_svmtest2 = cv_svmtest2_all.reshape(-1,cv_svmtest2_all.shape[1]*cv_svmtest2_all.shape[2])
+        # cv_noise = cv_noise_all.reshape(-1,cv_noise_all.shape[1]*cv_noise_all.shape[2])
+        
+        cv_svmtrain_norm = cv_svmtrain #(cv_svmtrain-np.min(cv_svmtrain,axis=0)[None,:])/(np.max(cv_svmtrain,axis=0)[None,:]-np.min(cv_svmtrain,axis=0)[None,:])
+        cv_svmtest1_norm = cv_svmtest1#(cv_svmtest1-np.min(cv_svmtrain,axis=0)[None,:])/(np.max(cv_svmtrain,axis=0)[None,:]-np.min(cv_svmtrain,axis=0)[None,:])
+        cv_svmtest2_norm = cv_svmtest2#(cv_svmtest2-np.min(cv_svmtrain,axis=0)[None,:])/(np.max(cv_svmtrain,axis=0)[None,:]-np.min(cv_svmtrain,axis=0)[None,:])
+        cv_noise_norm = cv_noise#(cv_noise-np.min(cv_svmtrain,axis=0)[None,:])/(np.max(cv_svmtrain,axis=0)[None,:]-np.min(cv_svmtrain,axis=0)[None,:])
+        
+        n_neighbors = len(np.unique(labels_svmtrain))
+        neigh = KNeighborsClassifier(n_neighbors=3)
+        neigh.fit(cv_svmtrain_norm, labels_svmtrain)
+
+    
+        labels_svmtest1_predict = neigh.predict(cv_svmtest1_norm) # labels_svmtest1_predict = svm_fit.predict(cv_svmtest1_norm[:nsamps_svmtest]); score=svm_fit.score(cv_svmtest1_norm[:nsamps_svmtest], labels_svmtest1[:nsamps_svmtest])
+        score1_stim = (labels_svmtest1_predict[labels_svmtest1!=0] == labels_svmtest1[labels_svmtest1!=0]).sum()/len(labels_svmtest1[labels_svmtest1!=0])
+        score1_nonstim = (labels_svmtest1_predict[labels_svmtest1==0] == labels_svmtest1[labels_svmtest1==0]).sum()/len(labels_svmtest1[labels_svmtest1==0])
+        score1_total = (labels_svmtest1_predict == labels_svmtest1).sum()/len(labels_svmtest1)
+        print('Test Set 1 Accuracy - Stim: %0.2f | NonStim: %0.2f | Total: %0.2f | idx_entry: %d' %(score1_stim,score1_nonstim,score1_total,idx_entry))
+    
+        labels_svmtest2_predict = neigh.predict(cv_svmtest2_norm)
+        score2_stim = (labels_svmtest2_predict[labels_svmtest2!=0] == labels_svmtest2[labels_svmtest2!=0]).sum()/len(labels_svmtest2[labels_svmtest2!=0])
+        score2_nonstim = (labels_svmtest2_predict[labels_svmtest2==0] == labels_svmtest2[labels_svmtest2==0]).sum()/len(labels_svmtest2[labels_svmtest2==0])
+        score2_total = (labels_svmtest2_predict == labels_svmtest2).sum()/len(labels_svmtest2)
+        print('Test Set 2 Accuracy - Stim: %0.2f | NonStim: %0.2f | Total: %0.2f' %(score2_stim,score2_nonstim,score2_total))
+    
+        # score1_stim = (labels_svmtest1_predict[labels_svmtest1==1] == labels_svmtest1[labels_svmtest1==1]).sum()/len(labels_svmtest1[labels_svmtest1==1])
+        # score1_nonstim = (labels_svmtest1_predict[labels_svmtest1==2] == labels_svmtest1[labels_svmtest1==2]).sum()/len(labels_svmtest1[labels_svmtest1==2])
+        # score1_total = (labels_svmtest1_predict == labels_svmtest1).sum()/len(labels_svmtest1)
+        # print('Test Set 1 Accuracy - Stim 1: %0.2f | Stim 2: %0.2f | Total: %0.2f | idx_entry: %d' %(score1_stim,score1_nonstim,score1_total,idx_entry))
+    
+        labels_noise_predict = neigh.predict(cv_noise_norm)
+        score2_noise_stim = (labels_noise_predict == 1).sum()/len(labels_noisemovie)
+        score2_noise_nonstim = (labels_noise_predict == 0).sum()/len(labels_noisemovie)
+        print('Noise - Classified as stim: %0.2f | Classified as nonstim %0.2f' %(score2_noise_stim,score2_noise_nonstim))
+    
+        score1_stim_loop[c,i] = score1_stim
+        score1_nonstim_loop[c,i] = score1_nonstim
+        score1_total_loop[c,i] = score1_total
+        score2_stim_loop[c,i] = score2_stim
+        score2_nonstim_loop[c,i] = score2_nonstim
+        score2_total_loop[c,i] = score2_total
+        score_noiseAsStim_loop[c,i] = score2_noise_stim
+        score_noiseAsNonstim_loop[c,i] = score2_noise_nonstim
+        
+# %% Context vectors test: K-means
+from sklearn.neighbors import NearestNeighbors, KNeighborsClassifier
+import seaborn as sbn
+from sklearn.decomposition import PCA
+
 
 # model = Wav2Vec2ForPreTraining(config)
-mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-2/'
+cpt = 700
+mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-lr-smallernet/cpt_'+str(cpt)+'/'
 model = Wav2Vec2ForPreTraining.from_pretrained(mdl_dir)
 model = model.cuda()
 
+mask_time_prob = config.mask_time_prob if args.mask_time_prob is None else args.mask_time_prob
+mask_time_length = config.mask_time_length if args.mask_time_length is None else args.mask_time_length
+
+
+data_collator = DataCollatorForWav2Vec2Pretraining(
+    model=model,
+    feature_extractor=feature_extractor,
+    pad_to_multiple_of=args.pad_to_multiple_of,
+    mask_time_prob=mask_time_prob,
+    mask_time_length=mask_time_length,
+)
 
 keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
 
@@ -723,11 +1133,13 @@ score2_total_loop = []
 score_noiseAsStim_loop = []
 score_noiseAsNonstim_loop = []
 
-n_loops = 10
+n_loops = 3
+temp_dim = 32 #24
+hidden_size = 480
 
 for i in range(n_loops):
     print('Loop %d'%i)
-    cv_svmtrain_all = np.zeros((0,24,768))
+    cv_svmtrain_all = np.zeros((0,temp_dim,hidden_size))
     model.eval()
     for step, batch in enumerate(dataloader_svmtrain):
         with torch.no_grad():
@@ -736,11 +1148,12 @@ for i in range(n_loops):
             batch.pop("sub_attention_mask", None)
             outputs = model(**batch)
             rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
+            # rgb = outputs['projected_states'].detach().cpu().numpy()
             cv_svmtrain_all = np.concatenate((cv_svmtrain_all,rgb),axis=0)
             
             
-    cv_svmtest1_all = np.zeros((0,24,768))
-    # model.eval()
+    cv_svmtest1_all = np.zeros((0,temp_dim,hidden_size))
+    model.eval()
     for step, batch in enumerate(dataloader_svmtest1):
         with torch.no_grad():
             torch.cuda.empty_cache()
@@ -751,8 +1164,8 @@ for i in range(n_loops):
             cv_svmtest1_all = np.concatenate((cv_svmtest1_all,rgb),axis=0)
     
     
-    cv_svmtest2_all = np.zeros((0,24,768))
-    # model.eval()
+    cv_svmtest2_all = np.zeros((0,temp_dim,hidden_size))
+    model.eval()
     for step, batch in enumerate(dataloader_svmtest2):
         with torch.no_grad():
             torch.cuda.empty_cache()
@@ -762,8 +1175,8 @@ for i in range(n_loops):
             rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
             cv_svmtest2_all = np.concatenate((cv_svmtest2_all,rgb),axis=0)
     
-    cv_noise_all = np.zeros((0,24,768))
-    # model.eval()
+    cv_noise_all = np.zeros((0,temp_dim,hidden_size))
+    model.eval()
     for step, batch in enumerate(dataloader_noise):
         with torch.no_grad():
             torch.cuda.empty_cache()
@@ -774,33 +1187,48 @@ for i in range(n_loops):
             cv_noise_all = np.concatenate((cv_noise_all,rgb),axis=0)
 
     
-    idx_entry = -1
-    cv_svmtrain = cv_svmtrain_all[:,idx_entry,:]
-    cv_svmtest1 = cv_svmtest1_all[:,idx_entry,:]
-    cv_svmtest2 = cv_svmtest2_all[:,idx_entry,:]
-    cv_noise = cv_noise_all[:,idx_entry,:]
+    for l in range(1):
+        idx_entry = -1#l
+        cv_svmtrain = cv_svmtrain_all[:,idx_entry,:]
+        cv_svmtest1 = cv_svmtest1_all[:,idx_entry,:]
+        cv_svmtest2 = cv_svmtest2_all[:,idx_entry,:]
+        cv_noise = cv_noise_all[:,idx_entry,:]
+        
+        # cv_svmtrain = cv_svmtrain_all.reshape(-1,cv_svmtrain_all.shape[1]*cv_svmtrain_all.shape[2])
+        # cv_svmtest1 = cv_svmtest1_all.reshape(-1,cv_svmtest1_all.shape[1]*cv_svmtest1_all.shape[2])
+        # cv_svmtest2 = cv_svmtest2_all.reshape(-1,cv_svmtest2_all.shape[1]*cv_svmtest2_all.shape[2])
+        # cv_noise = cv_noise_all.reshape(-1,cv_noise_all.shape[1]*cv_noise_all.shape[2])
+        
+        cv_svmtrain_norm = cv_svmtrain#(cv_svmtrain-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
+        cv_svmtest1_norm = cv_svmtest1#(cv_svmtest1-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
+        cv_svmtest2_norm = cv_svmtest2#(cv_svmtest2-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
+        cv_noise_norm = cv_noise#(cv_noise-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
+        
+        n_neighbors = len(np.unique(labels_svmtrain))
+        neigh = KNeighborsClassifier(n_neighbors=3)
+        neigh.fit(cv_svmtrain_norm, labels_svmtrain)
+        
+        
+
+        # fig,axs=plt.subplots(1,2,figsize=(15,5));fig.suptitle(str(idx_entry))
+        # axs[0].hist([labels_svmtrain[labels_svmtrain==1],labels_svmtrain[labels_svmtrain==2],labels_svmtrain[labels_svmtrain==3],labels_svmtrain[labels_svmtrain==0]])
+        # axs[1].hist([labels_svmtrain_predict[labels_svmtrain==1],labels_svmtrain_predict[labels_svmtrain==2],labels_svmtrain_predict[labels_svmtrain==3],labels_svmtrain_predict[labels_svmtrain==0]])
+        # # axs[1].hist(labels_svmtrain)
+        # plt.show()
+        
+       
+    # fig,axs=plt.subplots(1,2,figsize=(15,5));fig.suptitle(str(idx_entry))
+    # axs[0].hist(labels_svmtrain_predict[:nsamps_svmtrain])
+    # axs[1].hist(labels_svmtrain[:nsamps_svmtrain])
+
     
-    # cv_svmtrain = cv_svmtrain_all.reshape(-1,cv_svmtrain_all.shape[1]*cv_svmtrain_all.shape[2])
-    # cv_svmtest1 = cv_svmtest1_all.reshape(-1,cv_svmtest1_all.shape[1]*cv_svmtest1_all.shape[2])
-    # cv_svmtest2 = cv_svmtest2_all.reshape(-1,cv_svmtest2_all.shape[1]*cv_svmtest2_all.shape[2])
-    # cv_noise = cv_noise_all.reshape(-1,cv_noise_all.shape[1]*cv_noise_all.shape[2])
-    
-    cv_svmtrain_norm = (cv_svmtrain-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
-    cv_svmtest1_norm = (cv_svmtest1-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
-    cv_svmtest2_norm = (cv_svmtest2-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
-    cv_noise_norm = (cv_noise-np.mean(cv_svmtrain,axis=0)[None,:])/np.std(cv_svmtrain,axis=0)[None,:]
-    
-    clf = svm.SVC()
-    svm_fit = clf.fit(cv_svmtrain_norm, labels_svmtrain)
-    print(svm_fit.score(cv_svmtrain_norm, labels_svmtrain))
-    
-    labels_svmtest1_predict = svm_fit.predict(cv_svmtest1_norm)
+    labels_svmtest1_predict = neigh.predict(cv_svmtest1_norm)
     score1_stim = (labels_svmtest1_predict[labels_svmtest1!=0] == labels_svmtest1[labels_svmtest1!=0]).sum()/len(labels_svmtest1[labels_svmtest1!=0])
     score1_nonstim = (labels_svmtest1_predict[labels_svmtest1==0] == labels_svmtest1[labels_svmtest1==0]).sum()/len(labels_svmtest1[labels_svmtest1==0])
     score1_total = (labels_svmtest1_predict == labels_svmtest1).sum()/len(labels_svmtest1)
     print('Test Set 1 Accuracy - Stim: %0.2f | NonStim: %0.2f | Total: %0.2f' %(score1_stim,score1_nonstim,score1_total))
     
-    labels_svmtest2_predict = svm_fit.predict(cv_svmtest2_norm)
+    labels_svmtest2_predict = neigh.predict(cv_svmtest2_norm)
     score2_stim = (labels_svmtest2_predict[labels_svmtest2!=0] == labels_svmtest2[labels_svmtest2!=0]).sum()/len(labels_svmtest2[labels_svmtest2!=0])
     score2_nonstim = (labels_svmtest2_predict[labels_svmtest2==0] == labels_svmtest2[labels_svmtest2==0]).sum()/len(labels_svmtest2[labels_svmtest2==0])
     score2_total = (labels_svmtest2_predict == labels_svmtest2).sum()/len(labels_svmtest2)
@@ -815,7 +1243,7 @@ for i in range(n_loops):
     score2_total_loop.append(score2_total)
 
     
-    labels_noise_predict = svm_fit.predict(cv_noise_norm)
+    labels_noise_predict = neigh.predict(cv_noise_norm)
     score2_noise_stim = (labels_noise_predict == 1).sum()/len(labels_noisemovie)
     score2_noise_nonstim = (labels_noise_predict == 0).sum()/len(labels_noisemovie)
     print('Noise - Classified as stim: %0.2f | Classified as nonstim %0.2f' %(score2_noise_stim,score2_noise_nonstim))
@@ -823,7 +1251,17 @@ for i in range(n_loops):
     score_noiseAsStim_loop.append(score2_noise_stim)
     score_noiseAsNonstim_loop.append(score2_noise_nonstim)
     
-# 
+    
+    score1_stim_loop[c,i] = score1_stim
+    score1_nonstim_loop[c,i] = score1_nonstim
+    score1_total_loop[c,i] = score1_total
+    score2_stim_loop[c,i] = score2_stim
+    score2_nonstim_loop[c,i] = score2_nonstim
+    score2_total_loop[c,i] = score2_total
+    score_noiseAsStim_loop[c,i] = score2_noise_stim
+    score_noiseAsNonstim_loop[c,i] = score2_noise_nonstim
+
+    
 
 fig,axs=plt.subplots(1,1,figsize=(10,5));axs=np.ravel(axs)
 scores = [score1_stim_loop,score1_nonstim_loop,score1_total_loop,score2_stim_loop,score2_nonstim_loop,score2_total_loop,score_noiseAsStim_loop,score_noiseAsNonstim_loop]
@@ -831,11 +1269,6 @@ labels_scores = ['stim 1','nonstim 1','total 1','stim 2','nonstim 2','total 2','
 axs[0].boxplot(scores,labels=labels_scores);axs[0].set_ylim([0,1.1])
 axs[0].set_yticks(np.arange(0,1.1,.1))
 axs[0].grid(axis='y',color=[.7,.7,.7],linestyle='--')
-
-# %%
-
-mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-3/'
-model = Wav2Vec2ForPreTraining.from_pretrained(mdl_dir)
 
 # %% Recycle bin
 """        
@@ -1020,7 +1453,7 @@ feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(args.model_name_or_
 
 # make sure that dataset decodes audio with correct sampling rate
 raw_datasets = raw_datasets.cast_column(
-    args.audio_column_name, datasets.features.Audio(sampling_rate=feature_extractor.sampling_rate)
+    audio_column_name, datasets.features.Audio(sampling_rate=feature_extractor.sampling_rate)
 )
 
 # only normalized-inputs-training is supported
@@ -1030,11 +1463,15 @@ if not feature_extractor.do_normalize:
     )
 
 # set max & min audio length in number of samples
-max_length = int(args.max_duration_in_seconds * feature_extractor.sampling_rate)
-min_length = int(args.min_duration_in_seconds * feature_extractor.sampling_rate)
+max_duration_in_seconds = 1000
+min_duration_in_seconds = 1
+max_length = int(max_duration_in_seconds * feature_extractor.sampling_rate)
+min_length = int(min_duration_in_seconds * feature_extractor.sampling_rate)
+
+audio_column_name = 'audio'
 
 def prepare_dataset(batch):
-    sample = batch[args.audio_column_name]
+    sample = batch[audio_column_name]
 
     inputs = feature_extractor(
         sample["array"], sampling_rate=sample["sampling_rate"], max_length=max_length, truncation=True
