@@ -82,13 +82,13 @@ argsDict = dict(
     dataset_config_names=["clean","clean"],
     dataset_split_names=['train.clean.100'],
     model_name_or_path="patrickvonplaten/wav2vec2-base-v2",
-    output_dir="/home/saad/data/analyses/wav2vec2/wav2vec2-2d-inputNorm/",
+    output_dir="/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-spat-LR-1e-3/",
     
     dim_inputSpat = 128,
     dim_inputTemp = context_len,
     
     max_train_steps=None,
-    num_train_epochs=2000,
+    num_train_epochs=1000,
     per_device_train_batch_size=256,
     per_device_eval_batch_size=256,
     gradient_accumulation_steps=1,  # 8
@@ -127,6 +127,7 @@ argsDict = dict(
 args=namedtuple('args',argsDict)
 args=args(**argsDict)
 
+os.makedirs(args.output_dir, exist_ok=False)
 # %% init functions
 @dataclass
 class DataCollatorForWav2Vec2Pretraining:
@@ -264,17 +265,17 @@ if args.seed is not None:
     set_seed(args.seed)
 
 # Handle the repository creation
-if accelerator.is_main_process:
-    if args.push_to_hub and not args.preprocessing_only:
-        if args.hub_model_id is None:
-            repo_name = get_full_repo_name(Path(args.output_dir).name, token=args.hub_token)
-        else:
-            repo_name = args.hub_model_id
-        create_repo(repo_name, exist_ok=True, token=args.hub_token)
-        repo = Repository(args.output_dir, clone_from=repo_name, token=args.hub_token)
-    elif args.output_dir is not None:
-        os.makedirs(args.output_dir, exist_ok=True)
-accelerator.wait_for_everyone()
+# if accelerator.is_main_process:
+#     if args.push_to_hub and not args.preprocessing_only:
+#         if args.hub_model_id is None:
+#             repo_name = get_full_repo_name(Path(args.output_dir).name, token=args.hub_token)
+#         else:
+#             repo_name = args.hub_model_id
+#         create_repo(repo_name, exist_ok=True, token=args.hub_token)
+#         repo = Repository(args.output_dir, clone_from=repo_name, token=args.hub_token)
+#     elif args.output_dir is not None:
+#         os.makedirs(args.output_dir, exist_ok=True)
+# accelerator.wait_for_everyone()
 
 
 # %% Model
@@ -374,8 +375,9 @@ lr_scheduler = get_scheduler(
 # args.num_train_epochs = math.ceil(max_train_steps / num_update_steps_per_epoch)
 
 # ---- Train
-if os.path.isdir(args.output_dir):
-    shutil.rmtree(args.output_dir)
+# if os.path.isdir(args.output_dir):
+#     assert 1==2, 'Output directory already exists'
+    # shutil.rmtree(args.output_dir)
 
 
 total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -664,6 +666,8 @@ with open(fname_saveLosses,'w',newline='',encoding='utf-8') as csvfile:
 
 
 """
+mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-inputNorm/'
+fname_saveLosses = os.path.join(args.output_dir,'model_losses.csv')
 tloss_train_csvread = []
 closs_train_csvread = []
 dloss_train_csvread = []

@@ -372,7 +372,7 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
                     dim_conv_out = _conv_out_length(dim_layerOut,config.conv_kernel_spatial[i],config.conv_stride_spatial[i])
                     dim_maxpool_out = _maxpool_out_length(dim_conv_out,config.maxpool_kernel_spatial[i],config.maxpool_stride_spatial[i])
                     dim_layerOut = dim_maxpool_out
-                    dim_temporal_conv_out = _conv_out_length(dim_tempOut,config.conv_kernel[i],config.conv_stride[i])
+                    dim_tempOut = _conv_out_length(dim_tempOut,config.conv_kernel[i],config.conv_stride[i])
             else:
                 dim_layerOut = config.dim_inputSpat
                 dim_tempOut = config.dim_inputTemp
@@ -401,8 +401,15 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
         # print(dim_temporalOut)
         
         # print('Layer Norm axis:(%d,%d,%d,%d)'%(self.out_conv_dim,dim_temporalOut,dim_cnnMpOut,dim_cnnMpOut))
-        self.layer_norm = nn.LayerNorm([self.out_conv_dim,dim_cnnMpOut,dim_cnnMpOut],elementwise_affine=True)
-        # self.layer_norm = nn.LayerNorm([self.out_conv_dim,dim_temporalOut,dim_cnnMpOut,dim_cnnMpOut],elementwise_affine=False)
+        self.feat_extract_norm_func = config.feat_extract_norm_axis
+        if config.feat_extract_norm_axis == 'spatial':
+            self.layer_norm = nn.LayerNorm([self.out_conv_dim,dim_cnnMpOut,dim_cnnMpOut],elementwise_affine=config.norm_affine)
+        elif config.feat_extract_norm_axis == 'spatial-temporal':
+            self.layer_norm = nn.LayerNorm([self.out_conv_dim,dim_temporalOut,dim_cnnMpOut,dim_cnnMpOut],elementwise_affine=config.norm_affine)
+        elif config.feat_extract_norm_axis == 'channels':
+            self.layer_norm = nn.LayerNorm([self.out_conv_dim],elementwise_affine=False)
+        # self.layer_norm = nn.BatchNorm3d([self.out_conv_dim],affine=True)
+        # print(self.layer_norm)
         self.activation = ACT2FN[config.feat_extract_activation]
         
         if layer_id == len(config.conv_dim):
@@ -412,9 +419,24 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
         hidden_states = self.conv(hidden_states)
         hidden_states = self.maxpool(hidden_states)
         # print(hidden_states.shape)
-        hidden_states = hidden_states.transpose(1,2)
-        hidden_states = self.layer_norm(hidden_states)
-        hidden_states = hidden_states.transpose(1,2)
+        
+        if self.feat_extract_norm_func == 'spatial':
+            hidden_states = hidden_states.transpose(1,2)
+            hidden_states = self.layer_norm(hidden_states)
+            hidden_states = hidden_states.transpose(1,2)
+            
+        elif self.feat_extract_norm_func == 'spatial-temporal':
+            hidden_states = self.layer_norm(hidden_states)
+            
+        elif self.feat_extract_norm_func == 'channels':
+            hidden_states = self.layer_norm(hidden_states)
+            
+        elif self.feat_extract_norm_func == 'None':
+            hidden_states = hidden_states
+        
+        else:
+            assert 1==2,'invalid feat_extract_norm_func'
+
         hidden_states = self.activation(hidden_states)
         # print(hidden_states.shape)
 

@@ -217,11 +217,14 @@ class Wav2Vec2Config(PretrainedConfig):
         feat_proj_dropout=0.0, #0
         feat_quantizer_dropout=0.0, #0
         final_dropout=0.0, #0.1,
-        layerdrop=0.0, #0.1,
+        layerdrop=0.1, #0.1,
         initializer_range=0.02,
         layer_norm_eps=1e-6,
         feat_extract_module='cnn3d', # 'cnn1d' 'cnn3d'
         feat_extract_norm="layer",
+        feat_extract_norm_func = 'LayerNorm',   # LayerNorm, BatchNorm3d
+        feat_extract_norm_axis = 'spatial', # spatial, spatial-temporal, channels, None
+        norm_affine = True,
         feat_extract_activation="gelu",
         dim_inputSpat = 128,
         dim_inputTemp = 32,
@@ -277,6 +280,10 @@ class Wav2Vec2Config(PretrainedConfig):
         self.feat_extract_module=feat_extract_module
         self.feat_extract_norm = feat_extract_norm
         self.feat_extract_activation = feat_extract_activation
+        self.feat_extract_norm_func = feat_extract_norm_func
+        self.feat_extract_norm_axis = feat_extract_norm_axis
+        self.norm_affine = norm_affine
+
         
         self.dim_inputSpat = dim_inputSpat
         self.dim_inputTemp = dim_inputTemp
