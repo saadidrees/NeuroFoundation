@@ -18,12 +18,12 @@ import seaborn as sbn
 
 # %% Context vectors test: Probe model
 
-cpts_all = np.arange(0,1050,50) #[0,10,20,30,40,50,60,70,80,90,100,150,200,250,300,350,400,450,500]
+cpts_all = [0,500,1000] #np.arange(0,1050,50) #[0,10,20,30,40,50,60,70,80,90,100,150,200,250,300,350,400,450,500]
 
 keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
 
 
-n_loops = 3
+n_loops = 10
 l = 0
 
 score1_stim_loop = np.zeros((len(cpts_all),n_loops));score1_stim_loop[:]=np.nan
@@ -36,9 +36,9 @@ score_noiseAsStim_loop = np.zeros((len(cpts_all),n_loops));score_noiseAsStim_loo
 score_noiseAsNonstim_loop = np.zeros((len(cpts_all),n_loops));score_noiseAsNonstim_loop[:]=np.nan
 
 
-temp_dim = 24
+temp_dim = 32
 
-mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-3d-batchNorm/'
+mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-None-LR-0.001-contLen-32-dropOut-0.3/'
 
 c=10
 for c in range(0,len(cpts_all)):
@@ -164,7 +164,6 @@ for c in range(0,len(cpts_all)):
         idx_shuffled = np.arange(0,cv_svmtrain_norm.shape[0])
         np.random.shuffle(idx_shuffled)
         
-# 
         config_probe = dict(
                 dim_inpFeatures = cv_svmtrain_norm.shape[-1],
                 nunits_hidden = [128,], #[32,],
@@ -174,7 +173,7 @@ for c in range(0,len(cpts_all)):
         rgb=namedtuple('config_probe',config_probe)
         config_probe=rgb(**config_probe)
         
-        n_epochs = 1000
+        n_epochs = 2000
         batch_size = 512
         kernel_reg = 1e-5
         
@@ -294,7 +293,6 @@ for c in range(0,len(cpts_all)):
         axs[3].plot(scoreT[:,1],label='train');axs[3].plot(scoreV[:,1],label='val');axs[3].legend();axs[3].set_title('Nonstim')
         plt.show()
         
-        
         # Evaluate model on held out data
         bestEpoch = np.argmax(scoreV[:,-1])
         print('best epoch = %d'%bestEpoch)
@@ -372,28 +370,49 @@ score2_acc_avg = (score2_stim_avg+score2_nonstim_avg)/2
 
 # % Plot f-score
 labels_scores = cpts_all
-x_inter = 4
-y_range = (0.2,0.9)
-fig,axs=plt.subplots(1,2,figsize=(20,5));axs=np.ravel(axs)
-axs[0].plot(score1_total_avg,label='set 1')
-axs[0].plot(score2_total_avg,label='set 2')
-axs[0].set_yticks(np.arange(0,1.1,.1))
-axs[0].set_ylim(y_range)
-axs[0].set_xticks(np.arange(0,len(cpts_all),x_inter))
-axs[0].set_xticklabels(cpts_all[np.arange(0,len(cpts_all),x_inter,'int')])
-axs[0].grid(axis='y',color=[.7,.7,.7],linestyle='--')
-axs[0].set_title('fscore')
-axs[0].legend()
+x_inter = 1
+if x_inter>1:
+    y_range = (0.2,0.9)
+    fig,axs=plt.subplots(1,2,figsize=(20,5));axs=np.ravel(axs)
+    axs[0].plot(score1_total_avg,label='set 1')
+    axs[0].plot(score2_total_avg,label='set 2')
+    axs[0].set_yticks(np.arange(0,1.1,.1))
+    axs[0].set_ylim(y_range)
+    axs[0].set_xticks(np.arange(0,len(cpts_all),x_inter))
+    axs[0].set_xticklabels(cpts_all[np.arange(0,len(cpts_all),x_inter,'int')])
+    axs[0].grid(axis='y',color=[.7,.7,.7],linestyle='--')
+    axs[0].set_title('fscore')
+    axs[0].legend()
+    
+    axs[1].plot(score1_acc_avg,label='set 1')
+    axs[1].plot(score2_acc_avg,label='set 2')
+    axs[1].set_yticks(np.arange(0,1.1,.1))
+    axs[1].set_ylim(y_range)
+    axs[1].set_xticks(np.arange(0,len(cpts_all),x_inter))
+    axs[1].set_xticklabels(cpts_all[np.arange(0,len(cpts_all),x_inter,'int')])
+    axs[1].grid(axis='y',color=[.7,.7,.7],linestyle='--')
+    axs[1].set_title('Accuracy')
+    axs[1].legend()
+else:
+    
+    y_range = (0.3,0.8)
+    fig,axs=plt.subplots(1,2,figsize=(8,3));axs=np.ravel(axs)
+    axs[0].boxplot(score1_total_loop.T,labels=cpts_all)
+    axs[0].set_yticks(np.arange(0,1.1,.1))
+    axs[0].set_ylim(y_range)
+    axs[0].grid(axis='y',color=[.7,.7,.7],linestyle='--')
+    axs[0].set_title('fscore - Set 1')
+    axs[0].set_ylabel('F-score')
+    axs[0].set_xlabel('Epoch')
 
-axs[1].plot(score1_acc_avg,label='set 1')
-axs[1].plot(score2_acc_avg,label='set 2')
-axs[1].set_yticks(np.arange(0,1.1,.1))
-axs[1].set_ylim(y_range)
-axs[1].set_xticks(np.arange(0,len(cpts_all),x_inter))
-axs[1].set_xticklabels(cpts_all[np.arange(0,len(cpts_all),x_inter,'int')])
-axs[1].grid(axis='y',color=[.7,.7,.7],linestyle='--')
-axs[1].set_title('Accuracy')
-axs[1].legend()
+    axs[1].boxplot(score2_total_loop.T,labels=cpts_all)
+    axs[1].set_yticks(np.arange(0,1.1,.1))
+    axs[1].set_ylim(y_range)
+    axs[1].grid(axis='y',color=[.7,.7,.7],linestyle='--')
+    axs[1].set_title('fscore - Set 2')
+    axs[1].set_ylabel('F-score')
+    axs[1].set_xlabel('Epoch')
+
 
 
 # %%
@@ -443,11 +462,15 @@ axs[1].legend()
 # axs[2].set_title('non-stim induced')
 
 # %% Model definitions
+"""
+Notes:
+    1. Add option for zero hidden layer, i.e. directly a FC layer for classificiation.
+"""
 class probe_hidden (nn.Module):
     def __init__(self,config_probe,layer_id):
         super().__init__()
         
-        if layer_id ==0:
+        if layer_id ==0 and len(config_probe.nunits_hidden)>0:
             self.hidden = nn.Linear(config_probe.dim_inpFeatures,config_probe.nunits_hidden[layer_id]).double()
             self.batchnorm = nn.BatchNorm1d(config_probe.nunits_hidden[layer_id],affine=True).double()
             self.activation = nn.GELU()      
@@ -458,22 +481,21 @@ class probe_hidden (nn.Module):
             self.activation = nn.GELU()      
 
         elif layer_id >= len(config_probe.nunits_hidden):
-            self.hidden = nn.Linear(config_probe.nunits_hidden[-1],config_probe.nunits_out).double()
+            if len(config_probe.nunits_hidden)==0:      # No hidden layers. Only output layer
+                self.hidden = nn.Linear(config_probe.dim_inpFeatures,config_probe.nunits_out).double()
+            else:
+                self.hidden = nn.Linear(config_probe.nunits_hidden[-1],config_probe.nunits_out).double()
             self.batchnorm = nn.BatchNorm1d(config_probe.nunits_out,affine=True).double()
             self.activation = nn.Softmax(dim=1)
-    
+            
+
         
     def forward(self,hidden_states):
         hidden_states = self.hidden(hidden_states).double()
         hidden_states = self.batchnorm(hidden_states).double()    
         hidden_states = self.activation(hidden_states).double()           
         return hidden_states
-
-# class probe_seq(nn.Module):
-#     def __init__(self,config_probe,layer_id):
-#         supper().__init__()
-        
-        
+       
     
 class ProbeModel (nn.Module):
     def __init__(self,probe_layers):
@@ -495,4 +517,5 @@ def l2_reg(kernel_reg,mdl):
             l2_pen = l2_pen + (kernel_reg*(parameter**2).sum())
             
     return l2_pen
+
 

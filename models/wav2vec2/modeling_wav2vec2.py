@@ -407,7 +407,7 @@ class Wav2Vec2LayerNormConvLayer3d(nn.Module):
         elif config.feat_extract_norm_axis == 'spatial-temporal':
             self.layer_norm = nn.LayerNorm([self.out_conv_dim,dim_temporalOut,dim_cnnMpOut,dim_cnnMpOut],elementwise_affine=config.norm_affine)
         elif config.feat_extract_norm_axis == 'channels':
-            self.layer_norm = nn.LayerNorm([self.out_conv_dim],elementwise_affine=False)
+            self.layer_norm = nn.LayerNorm([self.out_conv_dim],elementwise_affine=config.norm_affine)
         # self.layer_norm = nn.BatchNorm3d([self.out_conv_dim],affine=True)
         # print(self.layer_norm)
         self.activation = ACT2FN[config.feat_extract_activation]
