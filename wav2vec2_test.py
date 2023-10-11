@@ -118,10 +118,10 @@ argsDict = dict(
     dim_inputSpat = 128,
     dim_inputTemp = context_len,
     
-    feat_extract_norm_axis = 'None', # spatial, spatial-temporal, channels, None
+    feat_extract_norm_axis = 'spatial', # spatial, spatial-temporal, channels, None
    
     max_train_steps=None,
-    num_train_epochs=1000,
+    num_train_epochs=1200,
     per_device_train_batch_size=256,
     per_device_eval_batch_size=256,
     gradient_accumulation_steps=1,  # 8
@@ -159,8 +159,8 @@ argsDict = dict(
     )
 
 if CLUSTER==0:
-    # argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
-    argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/test/'
+    argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
+    # argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/test/'
 else:
     argsDict['output_dir'] = '/home/sidrees/scratch/NeuroFoundation/data/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
 
@@ -293,10 +293,10 @@ if accelerator.is_local_main_process:
     transformers.utils.logging.set_verbosity_info()
 
     # set up weights and biases if available
-    if is_wandb_available():
-        import wandb
+    # if is_wandb_available():
+    #     import wandb
 
-        wandb.init(project=args.output_dir.split("/")[-1])
+    #     wandb.init(project=args.output_dir.split("/")[-1])
 else:
     # datasets.utils.logging.set_verbosity_error()
     transformers.utils.logging.set_verbosity_error()
