@@ -41,13 +41,14 @@ from collections import namedtuple
 df_tuple = namedtuple('df_tuple', ['timestamps', 'data'])
 import time
 import re
+import h5py
 
 from allensdk.brain_observatory.behavior.behavior_project_cache import VisualBehaviorOphysProjectCache
 
 from data_handler import dataExtractor
 from data_handler import utils
-
-
+import pickle
+from tqdm import tqdm
 
 output_dir = "/home/saad/data/analyses/allen/raw/"
 output_dir = Path(output_dir)
@@ -187,7 +188,7 @@ for select_container in containerIds_nmice:
             ts_selectedStim = np.array(dataDict['stim_pres'].loc[idx_selectedStim,['start_time','end_time']])
             
             a = np.diff(ts_selectedStim,axis=0)
-            thresh_gaps = 0#20    # seconds
+            thresh_gaps = 20 #20    # seconds
             b = np.where(a[:,0]>thresh_gaps)[0]
             c_start = np.concatenate((np.array([0]),b+1))
             c_end = np.concatenate((np.array([0]),b))
@@ -285,7 +286,43 @@ for i in range(len(dff_mov_grand)):
     dset_val = dset_val+temp
 
 
+# %% save dataset
+# fname_save = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.pkl'
+# dict_save = dict(dset_train=dset_train[:1000],dset_val=dset_val,context_len=context_len)
+# with open(fname_save,'wb') as f:
+#     pickle.dump(dict_save,f)
 
+fname_save = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
+save_h5dataset(fname_save,dset_train,'dset_train')
+save_h5dataset(fname_save,dset_val,'dset_val')
+
+
+def df_to_sarray(df):
+    v = df.values
+    idx = df.index
+    df_arr = np.vstack((idx,v)).T.astype('bytes')
+    return df_arr
+
+    
+# f = h5py.File(fname_save,'a')
+def save_h5dataset(fname_save,dset,dset_name):
+    with h5py.File(fname_save,'a') as f:
+        grp = f.create_group(dset_name)
+        for i in tqdm(range(0,len(dset))):
+            dset_loc = '/'+dset_name+'/'+str(i)
+            grp = f.create_group(dset_loc)
+            for key in dset[i].keys():
+                if dset[i][key].dtype=='O':
+                    grp.create_dataset(key,data=df_to_sarray(dset[i][key]))
+                elif len(np.atleast_1d(dset[i][key]))>1:
+                    grp.create_dataset(key,data=dset[i][key],compression='gzip')
+                else:
+                    grp.create_dataset(key,data=dset[i][key])
+
+
+
+# sa = df_to_sarray(dset_train[i]['stiminfo'])
+    
 # %% Context vector test - controlled sequences
 
 unique_stimuli = np.zeros((0),dtype='object')
@@ -395,6 +432,7 @@ for i in range(mov_range):
 stiminfo_stim1 = []
 stiminfo_stim1_fullseq = []
 stiminfo_stim2 = []
+stiminfo_stim2_fullseq = []
 stiminfo_nonstim = []
 stiminfo_nonstim_test = []
 
@@ -435,7 +473,8 @@ for i in range(len(dset_stim2)):
         _,rgb,_ = np.intersect1d(names_allstims,a,return_indices=True)
         labels_stim2 = np.hstack((labels_stim2,label_ids_allstims[rgb.astype('int')]))
         stiminfo_stim2.append(a)
-        
+        stiminfo_stim2_fullseq = stiminfo_stim2_fullseq+[list(dset_stim2[i]['stiminfo'])]
+
 for i in range(len(idx_topop)):
     dset_stim2.pop(i)
 
@@ -481,7 +520,7 @@ for i in range(nsamps_svmtrain):
 dset_svmtrain = dset_svmtrain + dset_nonstim[:nsamps_svmtrain_nonstim]
 labels_svmtrain = np.concatenate((labels_stim1[idx_svmtrain],np.zeros(nsamps_svmtrain_nonstim)))
 rgb = [stiminfo_stim1[a] for a in idx_svmtrain]
-rgb_fullseq = [stiminfo_stim1_fullseq[a] for a in idx_svmtrain]
+labels_svmtrain_fullseq = [stiminfo_stim1_fullseq[a] for a in idx_svmtrain] + np.zeros((nsamps_svmtrain_nonstim,context_len),dtype='int').tolist()
 
 dset_svmtest1=[]
 for i in range(nsamps_svmtest):
@@ -489,6 +528,12 @@ for i in range(nsamps_svmtest):
 dset_svmtest1 = dset_svmtest1+dset_nonstim_test[:nsamps_svmtest1_nonstim]
 labels_svmtest1 = np.concatenate((labels_stim1[idx_svmtest],np.zeros(nsamps_svmtest1_nonstim)))
 rgb_test = [stiminfo_stim1[a] for a in idx_svmtest]
+labels_svmtest1_fullseq = [stiminfo_stim1_fullseq[a] for a in idx_svmtest] + np.zeros((nsamps_svmtest1_nonstim,context_len),dtype='int').tolist()
+
+
+dset_svmtest2 = dset_stim2[:nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest2_nonstim]
+labels_svmtest2 = np.concatenate((labels_stim2[:nsamps_svmtest],np.zeros(nsamps_svmtest2_nonstim)))
+labels_svmtest2_fullseq = stiminfo_stim2_fullseq[:nsamps_svmtest] + np.zeros((nsamps_svmtest2_nonstim,context_len),dtype='int').tolist()
 
 # dset_svmtrain = dset_stim1[:nsamps_svmtrain]+dset_nonstim[:nsamps_svmtrain]
 # labels_svmtrain = np.concatenate((labels_stim1[:nsamps_svmtrain],np.zeros(nsamps_svmtrain)))
@@ -496,12 +541,29 @@ rgb_test = [stiminfo_stim1[a] for a in idx_svmtest]
 # dset_svmtest1 = dset_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest]
 # labels_svmtest1 = np.concatenate((labels_stim1[nsamps_svmtrain:nsamps_svmtrain+nsamps_svmtest],np.zeros(nsamps_svmtest)))
 
-dset_svmtest2 = dset_stim2[:nsamps_svmtest]+dset_nonstim_test[:nsamps_svmtest2_nonstim]
-labels_svmtest2 = np.concatenate((labels_stim2[:nsamps_svmtest],np.zeros(nsamps_svmtest2_nonstim)))
 
 labels_svmtrain[labels_svmtrain>0]=1
 labels_svmtest1[labels_svmtest1>0]=1
 labels_svmtest2[labels_svmtest2>0]=1
+
+for i in range(len(labels_svmtrain_fullseq)):
+    rgb = np.asarray(labels_svmtrain_fullseq[i])
+    rgb1 = np.ones(rgb.shape,dtype='int')
+    rgb1[rgb=='0'] = 0
+    labels_svmtrain_fullseq[i]=rgb1
+    
+for i in range(len(labels_svmtest1_fullseq)):
+    rgb = np.asarray(labels_svmtest1_fullseq[i])
+    rgb1 = np.ones(rgb.shape,dtype='int')
+    rgb1[rgb=='0'] = 0
+    labels_svmtest1_fullseq[i]=rgb1
+
+for i in range(len(labels_svmtest2_fullseq)):
+    rgb = np.asarray(labels_svmtest2_fullseq[i])
+    rgb1 = np.ones(rgb.shape,dtype='int')
+    rgb1[rgb=='0'] = 0
+    labels_svmtest2_fullseq[i]=rgb1
+
 
 
 dset_noisemovie = []
