@@ -40,19 +40,9 @@ from datasets import DatasetDict, concatenate_datasets, load_dataset
 from huggingface_hub import Repository, create_repo
 from torch.utils.data.dataloader import DataLoader
 from tqdm.auto import tqdm
+import h5py
 
 import transformers
-# from transformers import (
-#     AdamW,
-#     SchedulerType,
-#     Wav2Vec2Config,
-#     Wav2Vec2FeatureExtractor,
-#     Wav2Vec2ForPreTraining,
-#     get_scheduler,
-#     is_wandb_available,
-#     set_seed,
-# )
-
 from transformers import (
     AdamW,
     SchedulerType,
@@ -75,6 +65,27 @@ from transformers.utils import get_full_repo_name, send_example_telemetry
 
 
 logger = get_logger(__name__)
+
+dset_train = []
+dset_val = []
+
+fname_dset = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
+with h5py.File(fname_dset,'r') as f:
+    for i in range(len(f['dset_train'].keys())):
+        rgb = {}
+        idx= str(i)
+        for key in f['dset_train'][idx].keys():
+            rgb[key] = np.array(f['dset_train'][idx][key])
+        dset_train.append(rgb)
+        
+    for i in range(len(f['dset_val'].keys())):
+        rgb = {}
+        idx= str(i)
+        for key in f['dset_val'][idx].keys():
+            rgb[key] = np.array(f['dset_val'][idx][key])
+        dset_val.append(rgb)
+context_len = dset_train[0]['input_values'].shape[0]
+
 # %% Input arguments
 from collections import namedtuple
 argsDict = dict(
@@ -82,11 +93,12 @@ argsDict = dict(
     dataset_config_names=["clean","clean"],
     dataset_split_names=['train.clean.100'],
     model_name_or_path="patrickvonplaten/wav2vec2-base-v2",
-    output_dir="/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-spat-LR-1e-3/",
     
     dim_inputSpat = 128,
     dim_inputTemp = context_len,
     
+    feat_extract_norm_axis = 'None', # spatial, spatial-temporal, channels, None
+   
     max_train_steps=None,
     num_train_epochs=1000,
     per_device_train_batch_size=256,
@@ -94,7 +106,7 @@ argsDict = dict(
     gradient_accumulation_steps=1,  # 8
 
     lr_scheduler_type='linear',     # ['linear', 'cosine', 'cosine_with_restarts', 'polynomial', 'constant', 'constant_with_warmup', 'inverse_sqrt', 'reduce_lr_on_plateau']
-    num_warmup_steps=32000, #32000,
+    num_warmup_steps=32000,#32000, #32000,
     learning_rate=1e-3, #0.005,
     weight_decay=0.01,
     adam_beta1=0.9,
@@ -124,6 +136,10 @@ argsDict = dict(
     preprocessing_only=None,
     push_to_hub = False,
     )
+
+# argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
+argsDict['output_dir'] = '/home/sidrees/scratch/NeuroFoundation/data/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
+
 args=namedtuple('args',argsDict)
 args=args(**argsDict)
 
@@ -280,7 +296,7 @@ if args.seed is not None:
 
 # %% Model
 # config = Wav2Vec2Config.from_pretrained(args.model_name_or_path)
-config = Wav2Vec2Config(dim_inputSpat=args.dim_inputSpat,dim_inputTemp=args.dim_inputTemp)
+config = Wav2Vec2Config(dim_inputSpat=args.dim_inputSpat,dim_inputTemp=args.dim_inputTemp,feat_extract_norm_axis=args.feat_extract_norm_axis)
 feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(args.model_name_or_path)
 feature_extractor.sampling_rate = 11
 feature_extractor.do_normalize = False
@@ -728,6 +744,8 @@ axs[4].plot(gnorm[idx_toplot]);axs[4].set_xlabel('Steps');axs[4].set_title('grad
 axs[5].plot(ppl_train[idx_toplot]);axs[5].set_xlabel('Steps');axs[5].set_title('Perplexity')
 
 
+# %% Old Stuff
+"""
 # %% Context vectors test: SVM
 from sklearn import svm
 import seaborn as sbn
@@ -1273,246 +1291,4 @@ labels_scores = ['stim 1','nonstim 1','total 1','stim 2','nonstim 2','total 2','
 axs[0].boxplot(scores,labels=labels_scores);axs[0].set_ylim([0,1.1])
 axs[0].set_yticks(np.arange(0,1.1,.1))
 axs[0].grid(axis='y',color=[.7,.7,.7],linestyle='--')
-
-# %% Recycle bin
-"""        
-# % Model testing: stim vs non-stim
-
-keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
-vec_dset_stim = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_stim))
-vec_dset_nonstim = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_nonstim))
-
-
-n_samps = 64
-stim_dataloader = DataLoader(vec_dset_stim[:n_samps], collate_fn=data_collator, batch_size=8)
-nonstim_dataloader = DataLoader(vec_dset_nonstim[:n_samps], collate_fn=data_collator, batch_size=8)
-
-cv_stim = np.zeros((0,24,768))
-cv_nonstim = np.zeros((0,24,768))
-
-model.eval()
-for step, batch in enumerate(stim_dataloader):
-    with torch.no_grad():
-        torch.cuda.empty_cache()
-        batch=batch.to(device='cuda')
-        batch.pop("sub_attention_mask", None)
-        outputs = model(**batch)
-        rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
-        cv_stim = np.concatenate((cv_stim,rgb),axis=0)
-
-for step, batch in enumerate(nonstim_dataloader):
-    with torch.no_grad():
-        torch.cuda.empty_cache()
-        batch=batch.to(device='cuda')
-        batch.pop("sub_attention_mask", None)
-        outputs = model(**batch)
-        rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
-        cv_nonstim = np.concatenate((cv_nonstim,rgb),axis=0)
-
-idx_entry = 23
-
-cv_stim = cv_stim.reshape(-1,cv_stim.shape[1]*cv_stim.shape[2])
-cv_nonstim = cv_nonstim.reshape(-1,cv_nonstim.shape[1]*cv_nonstim.shape[2])
-
-# cv_stim = cv_stim[:,idx_entry,:]
-# cv_nonstim = cv_nonstim[:,idx_entry,:]
-
-mag_cv_stim = np.sum(cv_stim**2,axis=-1)
-mag_cv_nonstim = np.sum(cv_nonstim**2,axis=-1)
-
-
-sim_stim_stim = np.zeros((cv_stim.shape[0],cv_stim.shape[0]));sim_stim_stim[:]=np.nan
-sim_nonstim_nonstim = np.zeros((cv_nonstim.shape[0],cv_nonstim.shape[0]));sim_nonstim_nonstim[:]=np.nan
-sim_stim_nonstim = np.zeros((cv_stim.shape[0],cv_nonstim.shape[0]));sim_stim_nonstim[:]=np.nan
-
-for i in range(cv_stim.shape[0]):
-    for j in range(cv_stim.shape[0]):
-        if i!=j:
-            sim_stim_stim[i,j] = np.dot(cv_stim[i,:],cv_stim[j,:])/(np.linalg.norm(cv_stim[i,:])*np.linalg.norm(cv_stim[j,:]))
-            sim_nonstim_nonstim[i,j] = np.dot(cv_nonstim[i,:],cv_nonstim[j,:])/(np.linalg.norm(cv_nonstim[i,:])*np.linalg.norm(cv_nonstim[j,:]))
-            sim_stim_nonstim[i,j] = np.dot(cv_stim[i,:],cv_nonstim[j,:])/(np.linalg.norm(cv_stim[i,:])*np.linalg.norm(cv_nonstim[j,:]))
-    
-
-plt.hist(sim_stim_stim.flatten());plt.title('stim-stim');plt.show()
-plt.hist(sim_nonstim_nonstim.flatten());plt.title('nonstim-nonstim');plt.show()
-plt.hist(sim_stim_nonstim.flatten());plt.title('stim-nonstim');plt.show()
-
-
-
-# cv_test = cv_test.reshape(-1,cv_test.shape[1]*cv_test.shape[2])
-
-
-# % Model testing: pca
-from sklearn.decomposition import PCA
-keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
-vec_dset_test = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_train))
-
-
-n_samps = len(vec_dset_test)
-test_dataloader = DataLoader(vec_dset_test[:n_samps], collate_fn=data_collator, batch_size=8)
-
-cv_test_all = np.zeros((0,24,256))
-
-model.eval()
-for step, batch in enumerate(test_dataloader):
-    with torch.no_grad():
-        torch.cuda.empty_cache()
-        batch=batch.to(device='cuda')
-        batch.pop("sub_attention_mask", None)
-        outputs = model(**batch)
-        # rgb = outputs['hidden_states'][-1].detach().cpu().numpy()
-        rgb = outputs['projected_states'].detach().cpu().numpy()
-        cv_test_all = np.concatenate((cv_test_all,rgb),axis=0)
-
-cv_test = cv_test_all[:,-1,:]
-# cv_test = cv_test_all.reshape(-1,cv_test_all.shape[1]*cv_test_all.shape[2])
-# cv_test = cv_test.T
-
-
-cv_test_norm = (cv_test-np.mean(cv_test,axis=0)[None,:])/np.std(cv_test,axis=0)[None,:]
-
-# cv_test = cv_test[:,-1,:]
-
-a = PCA(2)
-pca_test = a.fit_transform(cv_test_norm)
-pca_test.shape
-
-plt.plot(pca_test[:,0],pca_test[:,1],'.')
-plt.plot(pca_test[1000:,0],pca_test[1000:,1],'.')
-plt.show()
-
-
-
-stiminfo_stacked = []
-i=0
-for i in range(len(dset_train)):
-    a = dset_train[i]['stiminfo']
-    a = list(a[:-1])
-    # stiminfo_stacked = stiminfo_stacked + a
-    stiminfo_stacked.append(a)
-
-stiminfo_stacked = np.asarray(stiminfo_stacked)
-
-idx_check = pca_test[:,0]>5
-stim_check = stiminfo_test[idx_check]
-
-(stim_check=='im005_r').sum()
-(stim_check=='im012_r').sum()
-(stim_check=='im024_r').sum()
-(stim_check=='0').sum()
-
-
-np.where(idx_check)[0]
-b = dset_test[728]['stiminfo']
-
-# dset_new = []
-# for i in a:
-#     dset_new.append(dset_test[i])
-
 """
-# %% [old] Dataset
-# We load all dataset configuration and datset split pairs passed in
-# ``args.dataset_config_names`` and ``args.dataset_split_names``
-datasets_splits = []
-for dataset_config_name, train_split_name in zip(args.dataset_config_names, args.dataset_split_names):
-    # load dataset
-    dataset_split = load_dataset(
-        args.dataset_name,
-        dataset_config_name,
-        split=train_split_name,
-        cache_dir=args.cache_dir,
-    )
-    # dataset_split = dataset_split[:10]
-    datasets_splits.append(dataset_split)
-
-# Only take the first 10 datsaets for testing
-# datasets_splits = [datasets_splits[0][:10]]
-
-# Next, we concatenate all configurations and splits into a single training dataset
-raw_datasets = DatasetDict()
-if len(datasets_splits) > 1:
-    raw_datasets["train"] = concatenate_datasets(datasets_splits).shuffle(seed=args.seed)
-else:
-    raw_datasets["train"] = datasets_splits[0]
-
-# Take ``args.validation_split_percentage`` from the training dataset for the validation_split_percentage
-num_validation_samples = raw_datasets["train"].num_rows * args.validation_split_percentage // 100
-
-if num_validation_samples == 0:
-    raise ValueError(
-        "`args.validation_split_percentage` is less than a single sample "
-        f"for {len(raw_datasets['train'])} training samples. Increase "
-        "`args.num_validation_split_percentage`. "
-    )
-
-raw_datasets["validation"] = raw_datasets["train"].select(range(num_validation_samples))
-raw_datasets["train"] = raw_datasets["train"].select(range(num_validation_samples, raw_datasets["train"].num_rows))
-
-# 2. Now we preprocess the datasets including loading the audio, resampling and normalization
-# Thankfully, `datasets` takes care of automatically loading and resampling the audio,
-# so that we just need to set the correct target sampling rate and normalize the input
-# via the `feature_extractor`
-feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(args.model_name_or_path)
-# feature_extractor.return_attention_mask=False
-
-# make sure that dataset decodes audio with correct sampling rate
-raw_datasets = raw_datasets.cast_column(
-    audio_column_name, datasets.features.Audio(sampling_rate=feature_extractor.sampling_rate)
-)
-
-# only normalized-inputs-training is supported
-if not feature_extractor.do_normalize:
-    raise ValueError(
-        "Training is only supported for normalized inputs. Make sure ``feature_extractor.do_normalize == True``"
-    )
-
-# set max & min audio length in number of samples
-max_duration_in_seconds = 1000
-min_duration_in_seconds = 1
-max_length = int(max_duration_in_seconds * feature_extractor.sampling_rate)
-min_length = int(min_duration_in_seconds * feature_extractor.sampling_rate)
-
-audio_column_name = 'audio'
-
-def prepare_dataset(batch):
-    sample = batch[audio_column_name]
-
-    inputs = feature_extractor(
-        sample["array"], sampling_rate=sample["sampling_rate"], max_length=max_length, truncation=True
-    )
-    batch["input_values"] = inputs.input_values[0]
-    batch["input_length"] = len(inputs.input_values[0])
-
-    return batch
-
-# load via mapped files via path
-cache_file_names = None
-if args.train_cache_file_name is not None:
-    cache_file_names = {"train": args.train_cache_file_name, "validation": args.validation_cache_file_name}
-
-# load audio files into numpy arrays
-with accelerator.main_process_first():
-    vectorized_datasets = raw_datasets.map(
-        prepare_dataset,
-        num_proc=args.preprocessing_num_workers,
-        remove_columns=raw_datasets["train"].column_names,
-        cache_file_names=cache_file_names,
-    )
-
-    if min_length > 0.0:
-        vectorized_datasets = vectorized_datasets.filter(
-            lambda x: x > min_length,
-            num_proc=args.preprocessing_num_workers,
-            input_columns=["input_length"],
-        )
-
-    vectorized_datasets = vectorized_datasets.remove_columns("input_length")
-
-# for large datasets it is advised to run the preprocessing on a
-# single machine first with ``args.preprocessing_only`` since there will mostly likely
-# be a timeout when running the script in distributed mode.
-# In a second step ``args.preprocessing_only`` can then be set to `False` to load the
-# cached dataset
-
-# if args.preprocessing_only:
-#     return
