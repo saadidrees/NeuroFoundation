@@ -65,16 +65,17 @@ from models.wav2vec2.configuration_wav2vec2 import Wav2Vec2Config
 from models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
 from transformers.utils import get_full_repo_name, send_example_telemetry
 
-CLUSTER=1
+wandb.init()
+
 
 logger = get_logger(__name__)
 
 dset_train = []
 dset_val = []
 
-CLUSTER = 1
+CLUSTER = 0
 
-if CLUSTER==1:
+if CLUSTER==0:
     fname_dset = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
 else:
     fname_dset = 'home/sidrees/scratch/NeuroFoundation/data/datasets/dataset_train.h5'
@@ -162,7 +163,6 @@ args=namedtuple('args',argsDict)
 args=args(**argsDict)
 
 os.makedirs(args.output_dir, exist_ok=False)
-wandb.init()
 
 # %% init functions
 @dataclass
