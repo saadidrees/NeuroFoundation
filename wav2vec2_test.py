@@ -322,7 +322,14 @@ if args.seed is not None:
 # %% Model
 # config = Wav2Vec2Config.from_pretrained(args.model_name_or_path)
 config = Wav2Vec2Config(dim_inputSpat=args.dim_inputSpat,dim_inputTemp=args.dim_inputTemp,feat_extract_norm_axis=args.feat_extract_norm_axis)
-feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(args.model_name_or_path)
+# feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(args.model_name_or_path)
+feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1,
+                                            sampling_rate=16000,
+                                            padding_side='right',
+                                            padding_value=0.0,
+                                            return_attention_mask=True,
+                                            do_normalize=True)
+
 feature_extractor.sampling_rate = 11
 feature_extractor.do_normalize = False
 
