@@ -30,6 +30,8 @@ import os
 import time
 # import shutil
 import numpy as np
+import wandb
+
 
 
 # import datasets
@@ -63,26 +65,39 @@ from models.wav2vec2.configuration_wav2vec2 import Wav2Vec2Config
 from models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
 from transformers.utils import get_full_repo_name, send_example_telemetry
 
+CLUSTER=1
 
 logger = get_logger(__name__)
 
 dset_train = []
 dset_val = []
 
-fname_dset = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
+CLUSTER = 1
+
+if CLUSTER==1:
+    fname_dset = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
+else:
+    fname_dset = 'home/sidrees/scratch/NeuroFoundation/data/datasets/dataset_train.h5'
+    
 with h5py.File(fname_dset,'r') as f:
     for i in range(len(f['dset_train'].keys())):
         rgb = {}
         idx= str(i)
         for key in f['dset_train'][idx].keys():
-            rgb[key] = np.array(f['dset_train'][idx][key])
+            if key=='input_values':
+                rgb[key] = np.array(f['dset_train'][idx][key],dtype='float32')
+            else:
+                rgb[key] = np.array(f['dset_train'][idx][key])
         dset_train.append(rgb)
         
     for i in range(len(f['dset_val'].keys())):
         rgb = {}
         idx= str(i)
         for key in f['dset_val'][idx].keys():
-            rgb[key] = np.array(f['dset_val'][idx][key])
+            if key=='input_values':
+                rgb[key] = np.array(f['dset_val'][idx][key],dtype='float32')
+            else:
+                rgb[key] = np.array(f['dset_val'][idx][key])
         dset_val.append(rgb)
 context_len = dset_train[0]['input_values'].shape[0]
 
@@ -137,13 +152,18 @@ argsDict = dict(
     push_to_hub = False,
     )
 
-# argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
-argsDict['output_dir'] = '/home/sidrees/scratch/NeuroFoundation/data/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
+if CLUSTER==0:
+    # argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
+    argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/test/'
+else:
+    argsDict['output_dir'] = '/home/sidrees/scratch/NeuroFoundation/data/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
 
 args=namedtuple('args',argsDict)
 args=args(**argsDict)
 
 os.makedirs(args.output_dir, exist_ok=False)
+wandb.init()
+
 # %% init functions
 @dataclass
 class DataCollatorForWav2Vec2Pretraining:
