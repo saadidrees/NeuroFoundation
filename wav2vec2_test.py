@@ -65,10 +65,10 @@ from models.wav2vec2.configuration_wav2vec2 import Wav2Vec2Config
 from models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
 from transformers.utils import get_full_repo_name, send_example_telemetry
 
+wandb.login(key='2bdd9e765e05763a9846ddeab362ec20dfbc8138')
 wandb.init()
-wandb.login(key=[2bdd9e765e05763a9846ddeab362ec20dfbc8138])
 
-
+# %%
 logger = get_logger(__name__)
 
 dset_train = []
