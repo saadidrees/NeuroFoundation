@@ -83,7 +83,7 @@ CLUSTER = 1
 if CLUSTER==0:
     fname_dset = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
 else:
-    fname_dset = 'home/sidrees/scratch/NeuroFoundation/data/datasets/dataset_train.h5'
+    fname_dset = '/home/sidrees/scratch/NeuroFoundation/data/datasets/dataset_train.h5'
     
 with h5py.File(fname_dset,'r') as f:
     for i in range(len(f['dset_train'].keys())):
