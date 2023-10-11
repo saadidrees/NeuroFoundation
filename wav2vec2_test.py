@@ -32,7 +32,7 @@ import shutil
 import numpy as np
 
 
-import datasets
+# import datasets
 import torch
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -264,7 +264,7 @@ def get_grad_norm(params, scale=1):
 accelerator = Accelerator()
 logger.info(accelerator.state, main_process_only=False)
 if accelerator.is_local_main_process:
-    datasets.utils.logging.set_verbosity_warning()
+    # datasets.utils.logging.set_verbosity_warning()
     transformers.utils.logging.set_verbosity_info()
 
     # set up weights and biases if available
@@ -273,7 +273,7 @@ if accelerator.is_local_main_process:
 
         wandb.init(project=args.output_dir.split("/")[-1])
 else:
-    datasets.utils.logging.set_verbosity_error()
+    # datasets.utils.logging.set_verbosity_error()
     transformers.utils.logging.set_verbosity_error()
 
 # If passed along, set the training seed now.
