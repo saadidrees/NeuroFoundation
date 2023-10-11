@@ -67,7 +67,8 @@ from transformers.utils import get_full_repo_name, send_example_telemetry
 
 # wandb.login(key='2bdd9e765e05763a9846ddeab362ec20dfbc8138')
 # wandb.login(key='X'*40)
-# wandb.init(entity="saadidrees", project="my_project")
+wandb.init(entity="saadidrees", project="my_project")
+wandb.init(mode="offline")
 # wandb.offline()
 # wandb.init()
 
@@ -77,7 +78,7 @@ logger = get_logger(__name__)
 dset_train = []
 dset_val = []
 
-CLUSTER = 0
+CLUSTER = 1
 
 if CLUSTER==0:
     fname_dset = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
