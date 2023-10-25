@@ -13,17 +13,81 @@ import torch.optim as optim
 from torchinfo import summary
 from collections import namedtuple
 import seaborn as sbn
+import h5py
+import numpy as np
+from tqdm import tqdm
+import re
+import os
+import socket
+import models.probe
+import matplotlib.pyplot as plt
+import models.wav2vec2.feature_extraction_wav2vec2
+from models.wav2vec2.feature_extraction_wav2vec2 import Wav2Vec2FeatureExtractor
+import models.wav2vec2.modeling_wav2vec2
+from models.wav2vec2.modeling_wav2vec2 import Wav2Vec2ForPreTraining
+import models.wav2vec2.configuration_wav2vec2
+from models.wav2vec2.configuration_wav2vec2 import Wav2Vec2Config
+
+# from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
+from models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices, _sample_negative_indices
+from transformers.utils import get_full_repo_name, send_example_telemetry
 
 
+hostname=socket.gethostname()
+if hostname=='sandwolf':
+    base = '/home/saad/data/'
+elif hostname=='sandhound':
+    base = '/home/saad/postdoc_db/'
+
+
+fname_load = os.path.join(base,'analyses/wav2vec2/datasets/dataset_probe.h5')
+
+def load_h5dataset(fname_dset,field):
+    with h5py.File(fname_dset,'r') as f:
+        if field == 'dict_labels':
+            dset = {}
+            for key in f[field].keys():
+                dset[key] = np.array(f[field][key])
+
+        else:
+            dset = []
+            for i in tqdm(range(len(f[field].keys()))):
+                rgb = {}
+                idx= str(i)
+                for key in f[field][idx].keys():
+                    if key=='input_values':
+                        rgb[key] = np.array(f[field][idx][key],dtype='float32')
+                    else:
+                        rgb[key] = np.array(f[field][idx][key])
+                dset.append(rgb)
+    return dset
+
+dset_svmtrain = load_h5dataset(fname_load,'dset_svmtrain')
+dset_svmtest1 = load_h5dataset(fname_load,'dset_svmtest1')
+dset_svmtest2 = load_h5dataset(fname_load,'dset_svmtest2')
+dict_labels = load_h5dataset(fname_load,'dict_labels')
+labels_svmtrain = dict_labels['labels_svmtrain']
+labels_svmtest1 = dict_labels['labels_svmtest1']
+labels_svmtest2 = dict_labels['labels_svmtest2']
+
+
+
+context_len = dset_svmtrain[0]['input_values'].shape[0]
 
 # %% Context vectors test: Probe model
+mdl_dir = os.path.join(base,'analyses/wav2vec2/','models/wav2vec2-3d-LN-spatial-LR-0.0005-contLen-32-mask-10-dropOut-0.5-hidden-0.5')
 
-cpts_all = [0,500,1000] #np.arange(0,1050,50) #[0,10,20,30,40,50,60,70,80,90,100,150,200,250,300,350,400,450,500]
+rgb = os.listdir(mdl_dir)
+pattern = r'_(\d+)'
+result = [int(re.search(pattern,s).group(1)) for s in rgb if 'cpt' in s]
+
+last_cpt = max(result)
+cpts_all = [0,500,last_cpt] #np.arange(0,1050,50) #[0,10,20,30,40,50,60,70,80,90,100,150,200,250,300,350,400,450,500]
 
 keys_to_remove = ('mouse_id','ophys_exp_id','stiminfo')
 
 
-n_loops = 10
+n_loops = 20
 l = 0
 
 score1_stim_loop = np.zeros((len(cpts_all),n_loops));score1_stim_loop[:]=np.nan
@@ -36,9 +100,8 @@ score_noiseAsStim_loop = np.zeros((len(cpts_all),n_loops));score_noiseAsStim_loo
 score_noiseAsNonstim_loop = np.zeros((len(cpts_all),n_loops));score_noiseAsNonstim_loop[:]=np.nan
 
 
-temp_dim = 32
+# temp_dim = 32
 
-mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-None-LR-0.001-contLen-32-dropOut-0.3/'
 
 c=10
 for c in range(0,len(cpts_all)):
@@ -52,6 +115,9 @@ for c in range(0,len(cpts_all)):
         mdl_dir_cpt = os.path.join(mdl_dir,'cpt_'+str(cpt)+'/')
         model = Wav2Vec2ForPreTraining.from_pretrained(mdl_dir_cpt)
         config = model.config
+    
+    
+    temp_dim = int(models.probe.get_layerTempOutputDim(context_len,config.conv_kernel,config.conv_stride))
     model = model.cuda()
     
     mask_time_prob = config.mask_time_prob
@@ -74,8 +140,8 @@ for c in range(0,len(cpts_all)):
     vec_dset_svmtest2 = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_svmtest2))
     dataloader_svmtest2 = DataLoader(vec_dset_svmtest2, collate_fn=data_collator, batch_size=32)
     
-    vec_dset_noise = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_noisemovie))
-    dataloader_noise = DataLoader(vec_dset_noise, collate_fn=data_collator, batch_size=32)
+    # vec_dset_noise = list(map(lambda d: {k: v for k, v in d.items() if k not in keys_to_remove}, dset_noisemovie))
+    # dataloader_noise = DataLoader(vec_dset_noise, collate_fn=data_collator, batch_size=32)
     
     
     hidden_size = config.hidden_size
@@ -180,8 +246,8 @@ for c in range(0,len(cpts_all)):
         loss_fn = nn.CrossEntropyLoss()
         
 
-        probe_layers = [probe_hidden(config_probe, layer_id=i) for i in range(len(config_probe.nunits_hidden)+1)]
-        mdl_probe = ProbeModel(probe_layers)
+        probe_layers = [models.probe.probe_hidden(config_probe, layer_id=i) for i in range(len(config_probe.nunits_hidden)+1)]
+        mdl_probe = models.probe.ProbeModel(probe_layers)
         mdl_probe = mdl_probe.cuda()
         optimizer = optim.AdamW(mdl_probe.parameters(), lr=config_probe.lr)
         params = []
@@ -216,7 +282,7 @@ for c in range(0,len(cpts_all)):
                     
                 y_pred = mdl_probe(X)
                 loss = loss_fn(y_pred, y)
-                loss = loss+l2_reg(kernel_reg,mdl_probe)     
+                loss = loss+models.probe.l2_reg(kernel_reg,mdl_probe)     
                 
                 # backward pass
                 loss.backward()
@@ -254,7 +320,7 @@ for c in range(0,len(cpts_all)):
             X = torch.tensor(cv_svmtest1_norm).cuda()
             y_pred = mdl_probe(X)
             loss_val = loss_fn(y_pred,torch.tensor(labels_svmtest1_probe).cuda())
-            loss_val = loss_val+l2_reg(kernel_reg,mdl_probe)     
+            loss_val = loss_val+models.probe.l2_reg(kernel_reg,mdl_probe)     
         
             y_pred = y_pred.detach().cpu().numpy()
             if y_pred.shape[-1] == temp_dim:
@@ -460,62 +526,5 @@ axs[1].legend()
 # axs[2].set_xticks(np.arange(0,len(cpts_all),x_inter))
 # axs[2].set_xticklabels(cpts_all[np.arange(0,len(cpts_all),x_inter)])
 # axs[2].set_title('non-stim induced')
-
-# %% Model definitions
-"""
-Notes:
-    1. Add option for zero hidden layer, i.e. directly a FC layer for classificiation.
-"""
-class probe_hidden (nn.Module):
-    def __init__(self,config_probe,layer_id):
-        super().__init__()
-        
-        if layer_id ==0 and len(config_probe.nunits_hidden)>0:
-            self.hidden = nn.Linear(config_probe.dim_inpFeatures,config_probe.nunits_hidden[layer_id]).double()
-            self.batchnorm = nn.BatchNorm1d(config_probe.nunits_hidden[layer_id],affine=True).double()
-            self.activation = nn.GELU()      
-
-        elif layer_id < len(config_probe.nunits_hidden):
-            self.hidden = nn.Linear(config_probe.nunits_hidden[layer_id-1],config_probe.nunits_hidden[layer_id]).double()
-            self.batchnorm = nn.BatchNorm1d(config_probe.nunits_hidden[layer_id],affine=True).double()
-            self.activation = nn.GELU()      
-
-        elif layer_id >= len(config_probe.nunits_hidden):
-            if len(config_probe.nunits_hidden)==0:      # No hidden layers. Only output layer
-                self.hidden = nn.Linear(config_probe.dim_inpFeatures,config_probe.nunits_out).double()
-            else:
-                self.hidden = nn.Linear(config_probe.nunits_hidden[-1],config_probe.nunits_out).double()
-            self.batchnorm = nn.BatchNorm1d(config_probe.nunits_out,affine=True).double()
-            self.activation = nn.Softmax(dim=1)
-            
-
-        
-    def forward(self,hidden_states):
-        hidden_states = self.hidden(hidden_states).double()
-        hidden_states = self.batchnorm(hidden_states).double()    
-        hidden_states = self.activation(hidden_states).double()           
-        return hidden_states
-       
-    
-class ProbeModel (nn.Module):
-    def __init__(self,probe_layers):
-        super().__init__()
-        self.probe_layers = nn.ModuleList(probe_layers)
-        
-    def forward(self,hidden_states):
-        for probe_layers in self.probe_layers:
-            hidden_states = probe_layers(hidden_states)      
-        return hidden_states
-
-
-def l2_reg(kernel_reg,mdl):
-    l2_pen = 0
-    for name, parameter in mdl.named_parameters():
-        p_regex = re.compile(r'hidden.weight')
-        rgb = p_regex.search(name)
-        if rgb != None:
-            l2_pen = l2_pen + (kernel_reg*(parameter**2).sum())
-            
-    return l2_pen
 
 
