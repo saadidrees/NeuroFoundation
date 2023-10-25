@@ -31,6 +31,12 @@ import time
 # import shutil
 import numpy as np
 import wandb
+import socket
+hostname=socket.gethostname()
+if hostname=='sandwolf':
+    base = '/home/saad/data/'
+elif hostname=='sandhound':
+    base = '/home/saad/postdoc_db/'
 
 
 
@@ -68,44 +74,54 @@ from transformers.utils import get_full_repo_name, send_example_telemetry
 # wandb.login(key='2bdd9e765e05763a9846ddeab362ec20dfbc8138')
 # wandb.login(key='X'*40)
 # wandb.init(entity="saadidrees", project="my_project")
-wandb.init(mode="offline")
+wandb.init(mode="offline",dir=base+'analyses/wav2vec2/',project='explore')
 # wandb.offline()
 # wandb.init()
+logger = get_logger(__name__)
+
+CLUSTER = 0
 
 # %%
-logger = get_logger(__name__)
 
 dset_train = []
 dset_val = []
 
-CLUSTER = 1
 
 if CLUSTER==0:
-    fname_dset = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
+    fname_dset = os.path.join(base,'analyses/wav2vec2/datasets/dataset_train.h5')
 else:
     fname_dset = '/home/sidrees/scratch/NeuroFoundation/data/datasets/dataset_train.h5'
-    
-with h5py.File(fname_dset,'r') as f:
-    for i in range(len(f['dset_train'].keys())):
-        rgb = {}
-        idx= str(i)
-        for key in f['dset_train'][idx].keys():
-            if key=='input_values':
-                rgb[key] = np.array(f['dset_train'][idx][key],dtype='float32')
-            else:
-                rgb[key] = np.array(f['dset_train'][idx][key])
-        dset_train.append(rgb)
-        
-    for i in range(len(f['dset_val'].keys())):
-        rgb = {}
-        idx= str(i)
-        for key in f['dset_val'][idx].keys():
-            if key=='input_values':
-                rgb[key] = np.array(f['dset_val'][idx][key],dtype='float32')
-            else:
-                rgb[key] = np.array(f['dset_val'][idx][key])
-        dset_val.append(rgb)
+
+
+
+def load_h5dataset(fname_dset,field,nsamps=-1):
+    with h5py.File(fname_dset,'r') as f:
+        if field == 'dict_labels':
+            dset = {}
+            for key in f[field].keys():
+                dset[key] = np.array(f[field][key])
+
+        else:
+            dset = []
+            if nsamps==-1:
+                nsamps = len(f[field].keys())
+            for i in tqdm(range(nsamps)):
+                rgb = {}
+                idx= str(i)
+                for key in f[field][idx].keys():
+                    if key=='input_values':
+                        rgb[key] = np.array(f[field][idx][key],dtype='float32')
+                    else:
+                        rgb[key] = np.array(f[field][idx][key])
+                dset.append(rgb)
+    return dset
+
+dset_train = load_h5dataset(fname_dset,'dset_train',nsamps=-1)
+dset_val = load_h5dataset(fname_dset,'dset_val')
+
 context_len = dset_train[0]['input_values'].shape[0]
+
+
 
 # %% Input arguments
 from collections import namedtuple
@@ -121,14 +137,14 @@ argsDict = dict(
     feat_extract_norm_axis = 'spatial', # spatial, spatial-temporal, channels, None
    
     max_train_steps=None,
-    num_train_epochs=1200,
+    num_train_epochs=1000,
     per_device_train_batch_size=256,
     per_device_eval_batch_size=256,
     gradient_accumulation_steps=1,  # 8
 
     lr_scheduler_type='linear',     # ['linear', 'cosine', 'cosine_with_restarts', 'polynomial', 'constant', 'constant_with_warmup', 'inverse_sqrt', 'reduce_lr_on_plateau']
     num_warmup_steps=32000,#32000, #32000,
-    learning_rate=1e-3, #0.005,
+    learning_rate=5e-4, #0.005,
     weight_decay=0.01,
     adam_beta1=0.9,
     adam_beta2=0.98,
@@ -143,7 +159,7 @@ argsDict = dict(
     saving_epochs=25,
     gradient_checkpointing=True,
     mask_time_prob=0.65, #0.65,
-    mask_time_length=3,        # Having this smaller (6) improves validation losses - but why?
+    mask_time_length=10,        # Having this smaller (6) improves validation losses - but why?
 
     preprocessing_num_workers=None,
     validation_split_percentage=1,
@@ -159,10 +175,10 @@ argsDict = dict(
     )
 
 if CLUSTER==0:
-    argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
+    argsDict['output_dir'] = base+'analyses/wav2vec2/models/wav2vec2-3d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-mask-'+str(argsDict['mask_time_length'])+'-dropOut-0.5-hidden-0.5/'
     # argsDict['output_dir'] = '/home/saad/data/analyses/wav2vec2/test/'
 else:
-    argsDict['output_dir'] = '/home/sidrees/scratch/NeuroFoundation/data/wav2vec2/wav2vec2-2d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-dropOut-0.3/'
+    argsDict['output_dir'] = '/home/sidrees/scratch/NeuroFoundation/data/wav2vec2/models/wav2vec2-3d-LN-'+argsDict['feat_extract_norm_axis']+'-LR-'+str(argsDict['learning_rate'])+'-contLen-'+str(context_len)+'-mask-'+str(argsDict['mask_time_length'])+'-dropOut-select-0.5/'
 
 args=namedtuple('args',argsDict)
 args=args(**argsDict)
@@ -320,7 +336,7 @@ if args.seed is not None:
 
 
 # %% Model
-# config = Wav2Vec2Config.from_pretrained(args.model_name_or_path)
+# config = Wav2Vec2Config.from_pretrained('/home/saad/data/analyses/wav2vec2/wav2vec2-2d-LN-spatial-LR-0.005-contLen-32-dropOut-0.5-hidden-0.5/cpt_0')
 config = Wav2Vec2Config(dim_inputSpat=args.dim_inputSpat,dim_inputTemp=args.dim_inputTemp,feat_extract_norm_axis=args.feat_extract_norm_axis)
 # feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(args.model_name_or_path)
 feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1,
@@ -714,8 +730,8 @@ with open(fname_saveLosses,'w',newline='',encoding='utf-8') as csvfile:
 
 
 """
-mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-2d-inputNorm/'
-fname_saveLosses = os.path.join(args.output_dir,'model_losses.csv')
+mdl_dir = '/home/saad/data/analyses/wav2vec2/wav2vec2-3d-LN-spatial-LR-0.005-contLen-32-dropOut-0.5-hidden-0.5/'
+fname_saveLosses = os.path.join(mdl_dir,'model_losses.csv')
 tloss_train_csvread = []
 closs_train_csvread = []
 dloss_train_csvread = []
