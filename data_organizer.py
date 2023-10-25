@@ -188,7 +188,7 @@ for select_container in containerIds_nmice:
             ts_selectedStim = np.array(dataDict['stim_pres'].loc[idx_selectedStim,['start_time','end_time']])
             
             a = np.diff(ts_selectedStim,axis=0)
-            thresh_gaps = 20 #20    # seconds
+            thresh_gaps = 0 #20    # seconds
             b = np.where(a[:,0]>thresh_gaps)[0]
             c_start = np.concatenate((np.array([0]),b+1))
             c_end = np.concatenate((np.array([0]),b))
@@ -286,15 +286,16 @@ for i in range(len(dff_mov_grand)):
     dset_val = dset_val+temp
 
 
+# fname_save = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
+# save_h5dataset(fname_save,dset_train,'dset_train')
+# save_h5dataset(fname_save,dset_val,'dset_val')
+
 # %% save dataset
 # fname_save = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.pkl'
 # dict_save = dict(dset_train=dset_train[:1000],dset_val=dset_val,context_len=context_len)
 # with open(fname_save,'wb') as f:
 #     pickle.dump(dict_save,f)
 
-fname_save = '/home/saad/data/analyses/wav2vec2/datasets/dataset_train.h5'
-save_h5dataset(fname_save,dset_train,'dset_train')
-save_h5dataset(fname_save,dset_val,'dset_val')
 
 
 def df_to_sarray(df):
@@ -308,6 +309,12 @@ def df_to_sarray(df):
 def save_h5dataset(fname_save,dset,dset_name):
     with h5py.File(fname_save,'a') as f:
         grp = f.create_group(dset_name)
+        
+        if dset_name=='dict_labels':
+            for key in dset.keys():
+                grp.create_dataset(key,data=dset[key],compression='gzip')
+
+        
         for i in tqdm(range(0,len(dset))):
             dset_loc = '/'+dset_name+'/'+str(i)
             grp = f.create_group(dset_loc)
@@ -575,6 +582,14 @@ val_max = mov.max()
 rgb = np.random.uniform(val_min,val_max,size=(32*nsamps_noisemovie,mov.shape[1],mov.shape[2]))
 dset_noisemovie = utils.chunker(rgb,context_len,dict_metadata=None)   
 labels_noisemovie = np.ones(len(dset_noisemovie))
+
+dict_labels = dict(labels_svmtrain=labels_svmtrain,labels_svmtest1=labels_svmtest1,labels_svmtest2=labels_svmtest2,
+                   labels_svmtrain_fullseq=labels_svmtrain_fullseq,labels_svmtest1_fullseq=labels_svmtest1_fullseq,labels_svmtest2_fullseq=labels_svmtest1_fullseq)
+fname_save = '/home/saad/data/analyses/wav2vec2/datasets/dataset_probe.h5'
+save_h5dataset(fname_save,dset_svmtrain,'dset_svmtrain')
+save_h5dataset(fname_save,dset_svmtest1,'dset_svmtest1')
+save_h5dataset(fname_save,dset_svmtest2,'dset_svmtest2')
+save_h5dataset(fname_save,dict_labels,'dict_labels')
 
 # %% Context vector test - timing
 
